@@ -1,0 +1,19 @@
+<?xml version="1" encoding="UTF-8"?>
+<!DOCTYPE gowin-fpga-project>
+<Project>
+    <Template>FPGA</Template>
+    <Version>5</Version>
+    <Device name="GW5AST-138C" pn="GW5AST-LV138PG484AC1/I0">gw5ast138c-007</Device>
+    <FileList>
+        <File path="src/dvi-tx/dvi_tx_clk_drv.v" type="file.verilog" enable="1"/>
+        <File path="src/dvi-tx/dvi_tx_tmds_enc.v" type="file.verilog" enable="1"/>
+        <File path="src/dvi-tx/dvi_tx_tmds_phy.v" type="file.verilog" enable="1"/>
+        <File path="src/dvi-tx/dvi_tx_top.v" type="file.verilog" enable="1"/>
+        <File path="src/gowin_pll/gowin_pll.v" type="file.verilog" enable="1"/>
+        <File path="src/top.v" type="file.verilog" enable="1"/>
+        <File path="src/video-misc/random_fractal_gen.v" type="file.verilog" enable="1"/>
+        <File path="src/video-misc/video_timing_ctrl.v" type="file.verilog" enable="1"/>
+        <File path="src/fractal_art.cst" type="file.cst" enable="1"/>
+        <File path="src/fractal_art.sdc" type="file.sdc" enable="1"/>
+    </FileList>
+</Project>
