@@ -5,6 +5,8 @@ rendered at **1920x1080 @ 60 Hz** over HDMI on the Sipeed Tang Mega 138K
 (Gowin GW5AST-138C). Every pixel is generated on the fly from the raster
 position; there is **no framebuffer**.
 
+![Clock face showing 10:08](docs/clock_1080p.png)
+
 ## How it works
 
 The picture is a set of simple geometric tests evaluated for the pixel at
@@ -58,6 +60,8 @@ eda_proj/                 Gowin project (open analog_clock.gprj in the IDE)
   src/video-misc/video_timing_ctrl.v  1080p raster timing
   src/dvi-tx/, gowin_pll/  reused HDMI infrastructure (150 MHz pixel clock)
   src/analog_clock.cst/.sdc            pin + timing constraints
+tools/clock_model.py      faithful software render of this design (docs/*.png)
+docs/                     rendered reference images
 ```
 
 ## Tuning

@@ -12,7 +12,7 @@ on the fly at the 150 MHz pixel clock as the raster scans.
 | <img src="fractal_art/docs/art_1080p.png" width="220"> | **[fractal_art](fractal_art/)** | Generative, ever-changing fractal art - a Julia set that wanders and recolours forever |
 | <img src="fractal_anim/docs/julia_1080p.png" width="220"> | **[fractal_anim](fractal_anim/)** | Animated Julia set that morphs smoothly between shapes |
 | <img src="mandelbrot/docs/mandelbrot_1080p.png" width="220"> | **[mandelbrot](mandelbrot/)** | The classic Mandelbrot set, rendered live |
-| _(no model render)_ | **[analog_clock](analog_clock/)** | Analog clock with moving hour / minute / second hands |
+| <img src="analog_clock/docs/clock_1080p.png" width="220"> | **[analog_clock](analog_clock/)** | Analog clock with moving hour / minute / second hands |
 
 Each folder is a complete Gowin project with its own `README.md`.
 
