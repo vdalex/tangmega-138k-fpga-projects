@@ -35,7 +35,7 @@ All four close timing at the **150 MHz** pixel clock.
 
 | Preview | Project | What it does |
 |---|---|---|
-| <img src="riscv_hdmi/docs/uart_banner.png" width="220"> | **[riscv_hdmi](riscv_hdmi/)** | Runs C on the **AndesCore A25** hardened into the GW5AST-138C, printing to a 1080p text console |
+| <img src="riscv_hdmi/docs/hdmi_console.png" width="220"> | **[riscv_hdmi](riscv_hdmi/)** | Runs C on the **AndesCore A25** hardened into the GW5AST-138C, printing to a 1080p text console |
 
 The GW5AST-138C is not just an FPGA: it carries an **A25 + AE350 subsystem as
 hardened silicon**, so the CPU costs *zero LUTs and zero registers*. This
