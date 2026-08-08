@@ -133,7 +133,7 @@ static void led_set(int on)
 	REG32(GPIO_BASE + GPIO_OFF_DATAOUT) = on ? 0x1 : 0x0;
 }
 
-/* Rough delay: the core runs at 200 MHz, but the loop is bounded by whatever
+/* Rough delay: the core runs at 800 MHz, but the loop is bounded by whatever
  * the compiler emits, so this is only ever "about half a second". */
 static void delay(volatile uint32_t n)
 {
@@ -159,7 +159,7 @@ static void print_banner(void)
 	puts_both(
 		"  The scene\n"
 		"  ---------\n"
-		"  * core      : AndesCore A25, 200 MHz, RV32\n"
+		"  * core      : AndesCore A25, 800 MHz, RV32\n"
 		"  * buses     : AHB 100 MHz, APB 100 MHz, RTC 10 MHz\n"
 		"  * this code : fabric BSRAM at 0x80000000, baked\n"
 		"                straight into the bitstream - no\n"
@@ -191,7 +191,7 @@ int main(void)
 	led_init();
 	for (i = 0; i < 20; i++) {
 		led_set(i & 1);
-		delay(60000);
+		delay(120000);
 	}
 
 	uart_init();
@@ -204,10 +204,10 @@ int main(void)
 	for (;;) {
 		led_set(1);
 		putc_both('*');
-		delay(450000);
+		delay(900000);
 
 		led_set(0);
-		delay(450000);
+		delay(900000);
 	}
 
 	return 0;

@@ -85,7 +85,7 @@ defparam PLL_inst.FBDIV_SEL = 1;
 // path from PLL_R[0], so the core is clocked only if this PLL is placed there
 // (see INS_LOC in the .cst) and only from this output (MUG1030 sec. 2.6.4).
 defparam PLL_inst.ODIV0_SEL = 8;	// 100 MHz - AHB/APB
-defparam PLL_inst.ODIV1_SEL = 4;	// 200 MHz - CPU core (dedicated path)
+defparam PLL_inst.ODIV1_SEL = 1;	// 800 MHz - CPU core (dedicated path)
 defparam PLL_inst.ODIV2_SEL = 8;
 defparam PLL_inst.ODIV3_SEL = 16;
 defparam PLL_inst.ODIV4_SEL = 80;

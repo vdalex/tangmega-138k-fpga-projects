@@ -134,7 +134,7 @@ One PLL feeds every AE350 domain from the 50 MHz board oscillator
 
 | Domain | Source | Frequency |
 |---|---|---|
-| `CORE_CLK` | `clkout1` of `PLL_R[0]` | 200 MHz (dedicated path) |
+| `CORE_CLK` | `clkout1` of `PLL_R[0]` | 800 MHz (dedicated path) |
 | `AHB_CLK` / `DDR_CLK` | `clkout0` | 100 MHz |
 | `APB_CLK` | `clkout2` | 100 MHz (sets the UART baud) |
 | `RTC_CLK` | `clkout4` | 10 MHz |
@@ -152,9 +152,22 @@ cannot end up in the wrong clock domain.
 
 Both caches come out of reset **disabled** (`mcache_ctl`, CSR `0x7CA`: `IC_EN`
 bit 0, `DC_EN` bit 1). With them off every instruction is fetched from fabric
-BSRAM over AHB and the core runs roughly 65x slower than the clock suggests.
+BSRAM over AHB and the core runs roughly 65x slower than its clock suggests.
 `start.S` sets `IC_EN`, measured as a **3x** speedup on hardware. `DC_EN` is
 left off on purpose: the data cache would also cover the peripheral region.
+
+Two measurements worth keeping in mind before reading much into "800 MHz":
+
+| Change | Expected | Measured |
+|---|---|---|
+| I-cache on | large | **3x** |
+| Core 200 -> 800 MHz | 4x | **2x** |
+
+Both fall short for the same reason - what is being timed is a delay loop over
+a `volatile` counter, so every iteration still round-trips through the fabric
+data RAM, and that traffic runs at the 100 MHz AHB clock no matter how fast the
+core is. Code that keeps its working set in registers gets closer to the clock;
+anything touching memory is bounded by the bus.
 
 ## Pinout
 

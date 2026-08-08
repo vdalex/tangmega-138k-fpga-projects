@@ -1,18 +1,18 @@
 `timescale 1ns / 1ns
 
 //
-// Hard RISC-V (AE350) bring-up on the Tang Mega 138K - stage 1.
+// Hard RISC-V (AE350) on the Tang Mega 138K.
 //
 // The GW5AST-138C carries an AndesCore A25 + AE350 subsystem as a HARD block:
-// instantiating AE350_SOC costs zero LUTs and zero registers. This stage wires
-// it up and proves it executes our C code:
+// instantiating AE350_SOC costs zero LUTs and zero registers. This wires it up
+// and gives it somewhere to speak:
 //
 //   * boot memory in fabric BSRAM, preloaded from the bitstream (fw/)
-//   * greeting + scene description printed on UART2 (115200 8N1, BL616)
-//   * LED driven from CPU GPIO, so there is proof of life even if the UART
-//     baud rate needs adjusting
-//
-// Stage 2 adds an APB peripheral so the CPU can drive the HDMI generator.
+//   * data memory in fabric BSRAM - this part has no usable DLM
+//   * greeting printed on UART2 (115200 8N1, BL616) and, at the same time,
+//     onto a 120x33 text screen scanned out as 1920x1080@60 HDMI
+//   * LED driven from CPU GPIO, so there is proof of life even if neither
+//     output is configured correctly
 //
 module top (
 	input			clk,		// 50 MHz board oscillator (V22)
@@ -48,7 +48,7 @@ module top (
 	// no clock at all, which looks exactly like a dead core.
 
 	wire	pll_lock;
-	wire	core_clk;	// 200 MHz - CPU core (clkout1, dedicated path)
+	wire	core_clk;	// 800 MHz - CPU core (clkout1, dedicated path)
 	wire	ahb_clk;	// 100 MHz - AHB bus
 	wire	apb_clk;	// 100 MHz - APB bus and peripherals (UART clock)
 	wire	ddr_clk;	//  50 MHz - spare (DDR_CLK is fed from ahb_clk)
