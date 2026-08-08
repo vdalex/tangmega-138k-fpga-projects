@@ -50,6 +50,19 @@
 #define GPIO_OFF_CHANNELDIR	0x28		/* 1 = output                         */
 
 /*
+ * Text console on HDMI. The fabric text buffer is decoded at this address on
+ * the data port (see top.v). Its row stride is a power of two, so a cell's
+ * address is just (row << 7) + col - no multiply. Write-only: the video side
+ * is the only reader, which is what lets it be a dual-port block RAM.
+ */
+#define TEXT_BASE		0x00010000u
+#define TEXT_COLS		120
+#define TEXT_ROWS		33
+#define TEXT_STRIDE		128
+#define TEXT_CELL(r, c)	(TEXT_BASE + (uint32_t)(r) * TEXT_STRIDE + (uint32_t)(c))
+#define REG8(a)			(*(volatile uint8_t *)(a))
+
+/*
  * The UART is clocked from the APB bus, which top.v drives at 100 MHz.
  * divisor = APB_HZ / (oversample * baud); the reset default oversample is 16.
  */

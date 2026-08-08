@@ -1,10 +1,11 @@
 /*
  * Stage 1 firmware for the AE350 hard RISC-V core on the Tang Mega 138K.
  *
- * Prints a greeting and a description of the scene on UART2 (115200 8N1,
- * reachable over the board's BL616 USB-serial bridge), then blinks the LED
- * GPIO forever. The blink matters: it is proof that the core is running our
- * code even if the UART divisor still needs tuning.
+ * Prints a greeting and a description of the scene to two places at once: the
+ * serial console on UART2 (115200 8N1, over the board's BL616 bridge) and a
+ * 120x33 text screen on HDMI that the fabric scans out at 1920x1080. Then it
+ * blinks the LED forever. The blink matters: it is proof that the core is
+ * running our code even if neither output is configured correctly.
  */
 #include "ae350.h"
 
@@ -44,10 +45,80 @@ static void uart_putc(char c)
 	REG32(UART2_BASE + UART_OFF_RBR) = (uint8_t)c;
 }
 
-static void uart_puts(const char *s)
+/* ---------------- HDMI text console ---------------- */
+
+/*
+ * A 120x33 character screen in fabric RAM, scanned out as 1920x1080 by
+ * text_video.v. Writing a byte here puts a glyph on the display; there is no
+ * scrolling and no reading back, which keeps both sides trivial.
+ */
+static int scr_row, scr_col;
+static int scr_top;			/* first row the text may wrap back onto */
+
+static void scr_clear_row(int r)
+{
+	int c;
+
+	for (c = 0; c < TEXT_COLS; c++)
+		REG8(TEXT_CELL(r, c)) = ' ';
+}
+
+static void scr_clear(void)
+{
+	int r;
+
+	for (r = 0; r < TEXT_ROWS; r++)
+		scr_clear_row(r);
+
+	scr_row = 0;
+	scr_col = 0;
+	scr_top = 0;
+}
+
+/*
+ * Move to the start of the next line, and blank it before anything is written
+ * there. At the bottom of the screen the cursor wraps back to scr_top instead
+ * of scrolling: scrolling would mean reading the buffer back, and the video
+ * side owns the only read port. Setting scr_top past the banner keeps the
+ * banner on screen while the heartbeat cycles through the space below it.
+ */
+static void scr_newline(void)
+{
+	scr_col = 0;
+	scr_row = (scr_row + 1 < TEXT_ROWS) ? (scr_row + 1) : scr_top;
+	scr_clear_row(scr_row);
+}
+
+static void scr_putc(char ch)
+{
+	if (ch == '\r')
+		return;
+
+	if (ch == '\n') {
+		scr_newline();
+		return;
+	}
+
+	/* wrap at the right edge, like the terminal does */
+	if (scr_col >= TEXT_COLS)
+		scr_newline();
+
+	REG8(TEXT_CELL(scr_row, scr_col)) = (uint8_t)ch;
+	scr_col++;
+}
+
+/* ---------------- both outputs at once ---------------- */
+
+static void putc_both(char c)
+{
+	uart_putc(c);
+	scr_putc(c);
+}
+
+static void puts_both(const char *s)
 {
 	while (*s)
-		uart_putc(*s++);
+		putc_both(*s++);
 }
 
 /* ---------------- GPIO ---------------- */
@@ -74,7 +145,7 @@ static void delay(volatile uint32_t n)
 
 static void print_banner(void)
 {
-	uart_puts(
+	puts_both(
 		"\n"
 		"=====================================================\n"
 		"  Tang Mega 138K  -  hard RISC-V (AE350) is alive!\n"
@@ -85,7 +156,7 @@ static void print_banner(void)
 		"  zero LUTs and zero registers of the FPGA fabric.\n"
 		"\n");
 
-	uart_puts(
+	puts_both(
 		"  The scene\n"
 		"  ---------\n"
 		"  * core      : AndesCore A25, 200 MHz, RV32\n"
@@ -98,12 +169,13 @@ static void print_banner(void)
 		"                port it arrives on is 64 bits wide\n"
 		"  * console   : UART2 at 0xF0300000, 115200 8N1,\n"
 		"                out through the on-board BL616 bridge\n"
+		"  * screen    : this same text, 120x33 characters, written\n"
+		"                to fabric RAM at 0x00010000 and scanned out\n"
+		"                as 1920x1080@60 HDMI - if you are reading it\n"
+		"                on a TV, the CPU put it there\n"
 		"  * LED       : GPIO bit 0 - the heartbeat below\n"
 		"\n"
-		"  Next stage: this CPU takes the wheel and drives the\n"
-		"  1080p HDMI generator over an APB peripheral.\n"
-		"\n"
-		"  Heartbeat: ");
+		"  Heartbeat:\n");
 }
 
 int main(void)
@@ -123,11 +195,15 @@ int main(void)
 	}
 
 	uart_init();
+	scr_clear();
 	print_banner();
+
+	/* Everything above stays put; the heartbeat cycles through what is left. */
+	scr_top = scr_row;
 
 	for (;;) {
 		led_set(1);
-		uart_putc('*');
+		putc_both('*');
 		delay(450000);
 
 		led_set(0);

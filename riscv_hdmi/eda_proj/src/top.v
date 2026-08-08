@@ -21,6 +21,12 @@ module top (
 	output			uart_tx,	// to BL616 bridge, BL616_IO28_TX (U15)
 	input			uart_rx,	// from BL616 bridge, BL616_IO27_RX (V14)
 
+	// HDMI - the CPU's console, rendered as 1920x1080 text
+	output			tmds_clk_p_0,
+	output			tmds_clk_n_0,
+	output	[2 : 0]	tmds_d_p_0,
+	output	[2 : 0]	tmds_d_n_0,
+
 	// Bring-up diagnostics on the four on-board LEDs (ACTIVE LOW - see below):
 	//   led[0] T18  fabric heartbeat; fast = clocks+reset OK, slow = not
 	//   led[1] R18  the firmware's own GPIO heartbeat - blinks = C code runs
@@ -57,6 +63,28 @@ module top (
 		.clkout4	(rtc_clk),
 		.clkin		(clk)
 	);
+
+	// Second PLL for the console: 1920x1080@60 off a 150 MHz pixel clock
+	// (VCO 750 MHz), as in the video projects in this repo. It is independent
+	// of every AE350 domain - the only thing crossing between them is the text
+	// buffer, which is dual-ported for exactly that reason.
+	wire	video_pll_lock;
+	wire	pixel_clock;		// 150 MHz
+	wire	serial_clock;		// 750 MHz - 5x DDR bit clock
+
+	Gowin_PLL_Video video_pll0(
+		.lock		(video_pll_lock),
+		.clkout0	(pixel_clock),
+		.clkout1	(serial_clock),
+		.clkin		(clk)
+	);
+
+	reg	[3 : 0]	vrst_cnt = 4'd0;
+	always@(posedge pixel_clock)begin
+		if(!video_pll_lock)		vrst_cnt <= 4'd0;
+		else if(!vrst_cnt[3])	vrst_cnt <= vrst_cnt + 1'b1;
+	end
+	wire video_reset = ~vrst_cnt[3];
 
 	// ------------------------------------------------------------------
 	// reset: hold the core down until the PLL is locked and the clocks have
@@ -125,6 +153,17 @@ module top (
 	wire				ram_hready;
 	wire				ram_hresp;
 
+	wire	[63 : 0]	dat_hrdata;
+
+	// Split the data port between the two fabric memories. These have to be
+	// declared before either instance uses them: a name used ahead of its
+	// declaration becomes an implicit ONE-BIT net, which silently left
+	// dat_htrans[1] undriven and killed every access to the data RAM.
+	// 0x0001_0000..0x0001_1FFF is the text window; everything else is RAM.
+	wire				txt_sel	   = (ram_haddr[19 : 16] == 4'h1);
+	wire	[1 : 0]		txt_htrans = txt_sel ? ram_htrans : 2'b00;
+	wire	[1 : 0]		dat_htrans = txt_sel ? 2'b00 : ram_htrans;
+
 	// DDR_CLK is driven from ahb_clk above, so one clock covers both sides
 	// of this port and there is no domain crossing to get wrong.
 	data_ram #(
@@ -132,14 +171,53 @@ module top (
 	)data_ram0(
 		.hclk		(ahb_clk),
 		.haddr		(ram_haddr),
-		.htrans		(ram_htrans),
+		.htrans		(dat_htrans),			// gated: the text window goes elsewhere
 		.hwrite		(ram_hwrite),
 		.hsize		(ram_hsize),
 		.hwdata		(ram_hwdata),
-		.hrdata		(ram_hrdata),
-		.hready		(ram_hready),
-		.hresp		(ram_hresp)
+		.hrdata		(dat_hrdata),
+		.hready		(),
+		.hresp		()
 	);
+
+	// ------------------------------------------------------------------
+	// text buffer (0x00010000) - what the CPU prints, on screen.
+	//
+	// It shares the CPU's data port with data_ram; the window is decoded below
+	// so exactly one of them answers. Writes only: the video side is the sole
+	// reader, which is what lets each byte lane be a simple dual-port BSRAM.
+	// ------------------------------------------------------------------
+
+	wire	[63 : 0]	txt_hrdata;			// always zero, see text_ram.v
+	wire	[12 : 0]	txt_vaddr;
+	wire	[7 : 0]		txt_vdata;
+
+	text_ram #(
+		.AW			(10)					// 1024 x 64-bit = 8 KB
+	)text_ram0(
+		.hclk		(ahb_clk),
+		.haddr		(ram_haddr),
+		.htrans		(txt_htrans),
+		.hwrite		(ram_hwrite),
+		.hsize		(ram_hsize),
+		.hwdata		(ram_hwdata),
+		.hrdata		(txt_hrdata),
+		.hready		(),
+		.hresp		(),
+		.vclk		(pixel_clock),
+		.vaddr		(txt_vaddr),
+		.vdata		(txt_vdata)
+	);
+
+	// Which slave answers this data phase - the select has to be delayed by a
+	// cycle, because HRDATA belongs to the address phase of the cycle before.
+	reg					txt_sel_d = 1'b0;
+	always@(posedge ahb_clk)
+		txt_sel_d <= txt_sel;
+
+	assign ram_hrdata = txt_sel_d ? txt_hrdata : dat_hrdata;
+	assign ram_hready = 1'b1;				// both slaves are zero-wait-state
+	assign ram_hresp  = 1'b0;
 
 	// ------------------------------------------------------------------
 	// GPIO: bit 0 drives the heartbeat LED
@@ -207,6 +285,42 @@ module top (
 	wire unused_diag = core_wfi | fetch_1m | fetch_4k;
 
 	wire unused_gpio = |{gpio_out[31 : 1], gpio_oe};
+
+	// ------------------------------------------------------------------
+	// video: the text renderer and the DVI transmitter (the PLL that feeds
+	// them is declared up with the other clocks, so that pixel_clock exists
+	// before the text buffer below refers to it).
+	// ------------------------------------------------------------------
+
+	wire	[23 : 0]	dvi_data;
+	wire				dvi_den, dvi_hsync, dvi_vsync;
+
+	text_video text_video0(
+		.pixel_clock		(pixel_clock),
+		.reset				(video_reset),
+		.text_addr			(txt_vaddr),
+		.text_data			(txt_vdata),
+		.video_vsync		(dvi_vsync),
+		.video_hsync		(dvi_hsync),
+		.video_den			(dvi_den),
+		.video_line_start	(),
+		.video_pixel_even	(dvi_data),
+		.video_pixel_odd	()
+	);
+
+	dvi_tx_top dvi_tx0(
+		.pixel_clock		(pixel_clock),
+		.ddr_bit_clock		(serial_clock),
+		.reset				(video_reset),
+		.den				(dvi_den),
+		.hsync				(dvi_hsync),
+		.vsync				(dvi_vsync),
+		.pixel_data			(dvi_data),
+		.tmds_clk			({tmds_clk_p_0, tmds_clk_n_0}),
+		.tmds_d0			({tmds_d_p_0[0], tmds_d_n_0[0]}),
+		.tmds_d1			({tmds_d_p_0[1], tmds_d_n_0[1]}),
+		.tmds_d2			({tmds_d_p_0[2], tmds_d_n_0[2]})
+	);
 
 	// ------------------------------------------------------------------
 	// the hard core

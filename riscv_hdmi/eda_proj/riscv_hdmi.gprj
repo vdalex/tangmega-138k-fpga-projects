@@ -8,6 +8,15 @@
         <File path="src/gowin_pll_ae350/gowin_pll_ae350.v" type="file.verilog" enable="1"/>
         <File path="src/data_ram.v" type="file.verilog" enable="1"/>
         <File path="src/boot_rom.v" type="file.verilog" enable="1"/>
+        <File path="src/text_ram.v" type="file.verilog" enable="1"/>
+        <File path="src/text_video.v" type="file.verilog" enable="1"/>
+        <File path="src/font_rom.v" type="file.verilog" enable="1"/>
+        <File path="src/video_timing_ctrl.v" type="file.verilog" enable="1"/>
+        <File path="src/gowin_pll_video/gowin_pll_video.v" type="file.verilog" enable="1"/>
+        <File path="src/dvi-tx/dvi_tx_clk_drv.v" type="file.verilog" enable="1"/>
+        <File path="src/dvi-tx/dvi_tx_tmds_enc.v" type="file.verilog" enable="1"/>
+        <File path="src/dvi-tx/dvi_tx_tmds_phy.v" type="file.verilog" enable="1"/>
+        <File path="src/dvi-tx/dvi_tx_top.v" type="file.verilog" enable="1"/>
         <File path="src/top.v" type="file.verilog" enable="1"/>
         <File path="src/riscv_hdmi.cst" type="file.cst" enable="1"/>
         <File path="src/riscv_hdmi.sdc" type="file.sdc" enable="1"/>

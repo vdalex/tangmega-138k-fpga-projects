@@ -1,9 +1,9 @@
 # Tang Mega 138K - FPGA projects
 
 Self-contained FPGA projects for the **Sipeed Tang Mega 138K**
-(Gowin **GW5AST-138C**): four that synthesise **1920x1080 @ 60 Hz** video in
-real time and stream it over HDMI, and one that wakes up the **hard RISC-V
-CPU** hiding in the same die.
+(Gowin **GW5AST-138C**). All of them put **1920x1080 @ 60 Hz** on HDMI with no
+framebuffer - four generate the picture in fabric, and the fifth wakes up the
+**hard RISC-V CPU** hiding in the same die and lets it print to the screen.
 
 ## Video projects
 
@@ -35,13 +35,16 @@ All four close timing at the **150 MHz** pixel clock.
 
 | Preview | Project | What it does |
 |---|---|---|
-| <img src="riscv_hdmi/docs/uart_banner.png" width="220"> | **[riscv_hdmi](riscv_hdmi/)** | Runs C on the **AndesCore A25** hardened into the GW5AST-138C |
+| <img src="riscv_hdmi/docs/uart_banner.png" width="220"> | **[riscv_hdmi](riscv_hdmi/)** | Runs C on the **AndesCore A25** hardened into the GW5AST-138C, printing to a 1080p text console |
 
 The GW5AST-138C is not just an FPGA: it carries an **A25 + AE350 subsystem as
 hardened silicon**, so the CPU costs *zero LUTs and zero registers*. This
 project boots it from a fabric ROM baked into the bitstream - no debugger, no
-SPI-flash programming - gives it fabric RAM for its stack, and prints from C
-over the serial console.
+SPI-flash programming - gives it fabric RAM for its stack, and has it print a
+greeting to two places at once: the serial console, and a **120x33 character
+screen** the fabric scans out at 1920x1080. The CPU writes characters into a
+dual-ported buffer; a glyph ROM and a five-stage pipeline turn them into
+pixels as the raster passes.
 
 Gowin's IP Core Generator has no AE350 entry in the **Education** edition,
 which makes the core look unavailable. It is not: `AE350_SOC` is in the device
@@ -51,8 +54,6 @@ arrives over a *dedicated path* from one specific PLL output, the internal DLM
 does not exist on this part, and the data port is 64 bits wide. The project
 README documents each one, along with the LED-only bisection programs used to
 find them.
-
-Stage 2 will add an APB peripheral so the CPU drives the HDMI generator.
 
 ## Hardware
 
