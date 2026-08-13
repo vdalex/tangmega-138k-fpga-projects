@@ -17,7 +17,7 @@
         <File path="src/audio/logistic_seq.v" type="file.verilog" enable="1"/>
         <File path="src/audio/synth8.v" type="file.verilog" enable="1"/>
         <File path="src/audio/pingpong.v" type="file.verilog" enable="1"/>
-        <File path="src/audio/audio_drive.v" type="file.verilog" enable="1"/>
+        <File path="src/audio/pt8211_tx.v" type="file.verilog" enable="1"/>
         <File path="src/audio/wave_rom.v" type="file.verilog" enable="1"/>
         <File path="src/audio/note_rom.v" type="file.verilog" enable="1"/>
         <File path="src/top.v" type="file.verilog" enable="1"/>

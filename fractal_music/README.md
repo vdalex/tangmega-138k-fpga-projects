@@ -73,6 +73,15 @@ divider has to be uniform — which rules out dithering one to average out at
 exactly 48 kHz. Of the uniform dividers available from the 75 MHz pixel clock,
 49 gives **47831.6 Hz**, six cents from 48 kHz where 48 would have been thirty.
 
+The datasheet says DIN is shifted in on the **rising** edge of BCK, so
+`pt8211_tx.v` presents each bit on the **falling** edge — a full half period,
+320 ns, of setup. Sipeed's `audio_drive.v` hands the bit clock straight to the
+pin and clocks its output registers on that same edge, which leaves zero setup
+and works or not depending on which signal reaches the DAC first through the
+routing. Its comments also have the word select backwards: the datasheet is
+explicit that **low is the right channel**, and driving it the documented way
+is what makes the board's stereo image match the model's.
+
 Everything — video, audio, the composer — runs on the single 75 MHz pixel
 clock. There is no simulator for this board, and a clock domain crossing is
 exactly the kind of fault that is expensive to find without one.
@@ -94,11 +103,11 @@ exactly the kind of fault that is expensive to find without one.
 
 ```
 eda_proj/                          Gowin project (open fractal_music.gprj)
-  src/top.v                        PLL, reset, the note grid, I2S clocking
+  src/top.v                        PLL, reset, the note grid, the wiring
   src/audio/logistic_seq.v         the composer - the map and the note events
   src/audio/synth8.v               8-voice wavetable synth, panned
   src/audio/pingpong.v             cross-coupled stereo delay
-  src/audio/audio_drive.v          PT8211 driver, from Sipeed's example
+  src/audio/pt8211_tx.v            PT8211 driver: bits on the falling edge
   src/video-misc/bifur_screen.v    the diagram, full frame, with the playhead
   src/video-misc/sweep_rom.v       generated: r and its Julia constant
   src/video-misc/music_video.v     raster and sync
@@ -187,6 +196,12 @@ and were found only by instrumenting the fabric:
   module with two outputs.
 - **A shared register between two multiplies** is the shape a tool folds into
   a DSP's own output register. One register per product now.
+- **A fabric-divided clock is a clock domain**, and the tool will invent a
+  frequency for it — here 100 MHz for a 1.53 MHz net — and then report zero
+  negative slack against a clock that does not exist. The frame strobe crossed
+  that boundary unconstrained; an occasional mis-sampled strobe moves every
+  phase accumulator in the synth off the grid, which is heard as notes drifting
+  out of tune rather than as a glitch. There is one clock domain now.
 
 The instrument in each case was an LED latch: a flag set on the first
 occurrence of an impossible condition, held until reset, read at leisure. On a

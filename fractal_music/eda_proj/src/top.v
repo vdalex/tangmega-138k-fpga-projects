@@ -77,7 +77,7 @@ module top (
 
 	localparam NOTE_DIV = 5979;			// SR / 8 notes per second
 
-	wire			sample_tick;		// declared with the I2S block below
+	wire			sample_tick;		// from the DAC frame; see pt8211_tx
 	reg	[12 : 0]	note_div = 13'd0;
 	reg				note_tick = 1'b0;
 
@@ -203,115 +203,34 @@ module top (
 		end
 
 	// ------------------------------------------------------------------
-	// I2S: a real bit clock, and Sipeed's own driver on it
+	// the DAC
 	// ------------------------------------------------------------------
 	//
-	// The driver expects to be clocked at the bit rate, the way the reference
-	// design has it, so generate that clock rather than emulating it with
-	// enables.
+	// One clock domain for the whole design, this included - see pt8211_tx.v
+	// for why the bits go out on the falling edge of BCK and why there is no
+	// separate bit clock any more.
 	//
-	// Divide by 49, not 48. The DAC is a PT8211 - an R-2R ladder with no master
-	// clock and no register interface - so it converts on each WS edge and the
-	// frame rate IS its conversion clock. That means the divider has to be
-	// uniform (dithering one to average out at exactly 48 kHz would put the
-	// jitter straight into the audio), and among uniform dividers 49 is much
-	// the closest:
-	//
-	//   /48 -> 1.5625  MHz BCK -> 48828.1 Hz   +1.73%   (+29.6 cents)
-	//   /49 -> 1.53061 MHz BCK -> 47831.6 Hz   -0.35%   ( -6.1 cents)
-	//
-	// 49 is odd, so the duty is 24/25 rather than square. The DAC only cares
-	// about edges, and both phases are over 300 ns against a part rated to
-	// 20 MHz, so this is of no consequence.
-	//
-	// tools/music_model.py is told the same 47832, so the phase increments it
-	// bakes into note_rom.vh produce the pitches heard in the preview.
+	// The divider sets the sample rate: 75 MHz / 49 / 32 = 47831.6 Hz, six
+	// cents below 48 kHz. It has to be a uniform divide - the DAC converts on
+	// each word select edge, so the frame rate IS its conversion clock and
+	// dithering a fractional divider to average out at exactly 48 kHz would
+	// put that jitter straight into the audio. tools/music_model.py is told
+	// the same 47832, so the increments baked into note_rom.vh give the
+	// pitches heard in the preview.
 
-	// The frame boundary is counted HERE, on the pixel clock, from the same
-	// divider that makes the bit clock - it is never taken back across from the
-	// bit clock domain.
-	//
-	// It used to be: sample_tick was an edge-detect on the driver's `req`,
-	// which is launched by clk_bit - a global net with its own insertion delay
-	// - and captured by a pixel-clock flip-flop. Nothing constrains that hop.
-	// The tool invented a 100 MHz clock for the bit clock and reported zero
-	// negative slack against it, which is a statement about a clock that does
-	// not exist. A tick that occasionally lands a cycle late, or twice, moves
-	// every phase accumulator in the synth off the grid, and that is heard as
-	// notes drifting out of tune rather than as a glitch.
-	//
-	// Both counters run off pixel_clock, so the tick and the driver's own frame
-	// keep the same rate by construction and cannot drift apart. Their phase
-	// offset does not matter: play_l/play_r are stable for ~1500 clocks either
-	// side of the moment the driver latches them.
-
-	reg	[5 : 0]	bit_div = 6'd0;			// pixel clocks within one BCK period
-	reg	[4 : 0]	bit_cnt = 5'd0;			// BCK periods within one stereo frame
-	reg			clk_bit = 1'b0;
-	reg			tick_r  = 1'b0;
-
-	always@(posedge pixel_clock)begin
-		if(bit_div == 6'd48)begin
-			bit_div <= 6'd0;
-			bit_cnt <= bit_cnt + 1'b1;
-		end else begin
-			bit_div <= bit_div + 1'b1;
-		end
-		clk_bit <= (bit_div < 6'd24);
-		tick_r  <= (bit_div == 6'd48) && (bit_cnt == 5'd31);
-	end
-
-	assign sample_tick = tick_r;
-
-	// The driver uses an asynchronous active-low reset. Declared before it is
-	// used - a name referenced ahead of its declaration silently becomes a
-	// one-bit implicit net, which has already cost this project a day.
-	reg	[2 : 0]	rstn_sync = 3'd0;
-	always@(posedge clk_bit)
-		rstn_sync <= {rstn_sync[1 : 0], ~reset};
-	wire rstn_bit = rstn_sync[2];
-
-	// Which half of the frame the driver is asking for. The first request after
-	// reset fills the half where WS is low, then they alternate.
-	// The toggle runs one bit-clock behind `req`, because the driver does not
-	// latch idata on the request cycle - it latches on the cycle after
-	// (`idata_r <= req_r1 ? idata : ...`, and req_r1 is req delayed by one).
-	// Toggling on req itself flips the selector before the word is taken, and
-	// swaps the two channels.
-	wire		audio_req;
-	reg			req_late = 1'b0;
-	reg			ch_r = 1'b0;
-
-	always@(posedge clk_bit or negedge rstn_bit)
-		if(!rstn_bit)begin
-			req_late <= 1'b0;
-			ch_r     <= 1'b0;
-		end else begin
-			req_late <= audio_req;
-			if(req_late)	ch_r <= ~ch_r;
-		end
-
-	// WS LOW is the RIGHT channel on a PT8211, not the left. The datasheet is
-	// explicit: "when the WS clock is in the Low level, the DIN data will be
-	// shifted to the right input register". Sipeed's driver comments it the
-	// other way round ("低电平对应左声道") and so plays its channels swapped -
-	// which nobody notices on a mono test sine, but this piece pans every note.
-	wire signed [15 : 0] audio_word = ch_r ? play_l : play_r;
-
-	audio_drive audio0(
-		.clk_1p536m	(clk_bit),
-		.rst_n		(rstn_bit),
-		.idata		(audio_word),
-		.req		(audio_req),
-		.HP_BCK		(HP_BCK),
-		.HP_WS		(HP_WS),
-		.HP_DIN		(HP_DIN)
+	pt8211_tx #(
+		.DIV	(49),
+		.HALF	(24)
+	)dac0(
+		.clk			(pixel_clock),
+		.reset			(reset),
+		.sample_l		(play_l),
+		.sample_r		(play_r),
+		.sample_tick	(sample_tick),
+		.bck			(HP_BCK),
+		.ws				(HP_WS),
+		.din			(HP_DIN)
 	);
-
-	// `audio_word` is now the only signal crossing into the bit clock domain,
-	// and it is quasi-static there - a new pair of samples appears once per
-	// frame and sits unchanged for over a thousand pixel clocks on either side
-	// of the moment the driver takes it.
 
 	assign PA_EN = 1'b0;
 
