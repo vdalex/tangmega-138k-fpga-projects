@@ -1,9 +1,10 @@
 # Tang Mega 138K - FPGA projects
 
 Self-contained FPGA projects for the **Sipeed Tang Mega 138K**
-(Gowin **GW5AST-138C**). All of them put **1920x1080 @ 60 Hz** on HDMI with no
-framebuffer - four generate the picture in fabric, and the fifth wakes up the
-**hard RISC-V CPU** hiding in the same die and lets it print to the screen.
+(Gowin **GW5AST-138C**). Every one of them puts a picture on HDMI with **no
+framebuffer** - four generate it in fabric, one wakes up the **hard RISC-V CPU**
+hiding in the same die and lets it print to the screen, and one **composes
+music** and draws the map it is composing from.
 
 ## Video projects
 
@@ -30,6 +31,31 @@ scans - there is **no framebuffer** and no external memory.
   reference renders in `docs/`.
 
 All four close timing at the **150 MHz** pixel clock.
+
+## Sound
+
+| Preview | Project | What it does |
+|---|---|---|
+| <img src="fractal_music/docs/screen.png" width="220"> | **[fractal_music](fractal_music/)** | A logistic map composes; the trajectory of that same map fills the screen with a playhead riding along it |
+
+The only project here with audio, out through the board's **PT8211** DAC - a
+16-bit R-2R ladder with no master clock and no registers, driven in
+LSB-justified format. Nothing scripts the music: `x <- r*x*(1-x)` is stepped
+while `r` sweeps from 2.8 to 4.0 over forty seconds, and the shape of the piece
+is the shape of the map. Below the first bifurcation one note repeats; past it
+a two-note figure appears, then four, then chaos, with windows of clear motif
+inside it. Eight voices are time-multiplexed onto one wavetable, panned from
+the orbit itself, and sent through a cross-coupled stereo delay.
+
+The screen deliberately shows the **trajectory** rather than the settled
+attractor. Just past `r = 3` the fixed point is only marginally unstable, so an
+orbit sitting on it takes thousands of iterations to spiral away - the textbook
+diagram forks a full second before the music does. Plotting what the orbit
+actually visits makes picture and sound agree by construction.
+
+This one runs at **1280x720**; sharing the die with the audio engine cost
+enough routing margin that 1080p would not close.
+[Listen to the rendered preview](fractal_music/docs/preview.wav).
 
 ## Hard RISC-V
 
@@ -62,7 +88,12 @@ find them.
 - **Video clocking:** on-chip PLL, VCO 750 MHz -> 150 MHz pixel + 750 MHz serial (5x)
 - **Video output:** 1920x1080, 150 MHz pixel clock (~60.6 Hz refresh), raw
   **DVI** TMDS (no InfoFrame / HDCP). Connect the HDMI cable **directly to a TV
-  or monitor** - some AV receivers reject a raw-DVI stream.
+  or monitor** - some AV receivers reject a raw-DVI stream. `fractal_music`
+  runs 1280x720 off a 75 MHz pixel clock instead.
+- **Audio** (fractal_music): **PT8211** DAC on the 3.5 mm jack - `HP_BCK` Y17,
+  `HP_WS` AB17, `HP_DIN` AA16, `PA_EN` AB16 (**active low**, drive 0 to enable).
+  Not over HDMI: real HDMI audio needs data islands and TERC4, which a raw-DVI
+  transmitter does not do.
 - **Serial console** (riscv_hdmi): through the on-board **BL616** USB-serial
   bridge at 115200 8N1; if two COM ports appear, it is usually the
   higher-numbered one.
