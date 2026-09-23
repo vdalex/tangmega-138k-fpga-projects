@@ -1,0 +1,440 @@
+diff --git a/litex_boards/targets/sipeed_tang_mega_138k.py b/litex_boards/targets/sipeed_tang_mega_138k.py
+index 03d08914..870fe781 100755
+--- a/litex_boards/targets/sipeed_tang_mega_138k.py
++++ b/litex_boards/targets/sipeed_tang_mega_138k.py
+@@ -39,6 +39,7 @@ class _CRG(LiteXModule):
+     def __init__(self, platform, sys_clk_freq, cpu_clk_freq=0,
+         with_sdram     = False, sdram_rate="1:2",
+         with_ddr3      = False,
++        with_gowin_ddr3 = False, gowin_ddr3_memory_clk_freq=400e6,
+         with_video_pll = False,
+         with_pcie      = False,
+         with_ethernet  = False,
+@@ -64,11 +65,23 @@ class _CRG(LiteXModule):
+             self.stop       = Signal()
+             self.reset      = Signal()
+ 
++        if with_gowin_ddr3:
++            # Only the memory clock is generated here. The controller's user clock
++            # (memory_clk/4) is produced inside the IP itself, so it is a clock
++            # domain the GowinDDR3 module owns rather than one of ours.
++            self.cd_ddr3_mem   = ClockDomain()
++            self.ddr3_pll_stop = Signal() # Driven by the IP; gates cd_ddr3_mem.
++            self.ddr3_rst_n    = Signal()
++            # Two unused, permanently enabled outputs ahead of the memory clock, so
++            # that the gated one is never the PLL's only active output - see below.
++            self.cd_ddr3_spare0 = ClockDomain()
++            self.cd_ddr3_spare1 = ClockDomain()
++
+         if with_pcie:
+             self.cd_crg_pcie = ClockDomain()
+ 
+         # Clk
+-        clk50 = platform.request("clk50")
++        self.clk50 = clk50 = platform.request("clk50")
+ 
+         # Power on reset
+         por_count = Signal(16, reset=2**16-1)
+@@ -77,18 +90,72 @@ class _CRG(LiteXModule):
+         self.comb += por_done.eq(por_count == 0)
+         self.sync.por += If(~por_done, por_count.eq(por_count - 1))
+ 
+-        # PLL
++        # PLL(s)
++        #
++        # The AE350's CORE_CLK is not ordinary fabric routing: it exists only
++        # between PLL_R[0] and the core, so a design with the hard CPU has to
++        # pin its PLL to the right-hand side. DDR3 wants the opposite. The
++        # memory banks on this board (6 and 7) are served by the left PLLs -
++        # the pin report names their clock-capable functions LPLL0..LPLL3 -
++        # and Gowin's own shared-DDR3 reference for this die
++        # (RiscV_AE350_SOC_V1.3/example/DDR3_Shared, DK_START_GW5AST138) pins
++        # the memory PLL to PLL_L[0] while the CPU PLL sits at PLL_R[0].
++        #
++        # One PLL cannot be in both places, so give DDR3 its own whenever the
++        # CPU has already claimed the right-hand one.
++        ddr3_own_pll = with_ddr3 and bool(cpu_clk_freq)
++
+         self.pll = pll = GW5APLL(devicename=platform.devicename, device=platform.device)
+         self.comb += pll.reset.eq(~por_done | self.rst)
+         pll.register_clkin(clk50, 50e6)
+-        if with_ddr3:
++        platform.toolchain.additional_cst_commands.append("INS_LOC \"PLL\" PLL_R[0]") # Magic incantation for Gowin-AE350 CPU :)
++
++        if ddr3_own_pll:
++            self.pll_ddr3 = pll_ddr3 = GW5APLL(devicename=platform.devicename,
++                device=platform.device, name="PLL_DDR3")
++            self.comb += pll_ddr3.reset.eq(~por_done | self.rst)
++            pll_ddr3.register_clkin(clk50, 50e6)
+             # Keep sys/sys2x phase-aligned across the PHY stop/reset sequence.
++            pll_ddr3.create_clkout(self.cd_sys2x_i, 2*sys_clk_freq)
++            platform.toolchain.additional_cst_commands.append("INS_LOC \"PLL_DDR3\" PLL_L[0]")
++        elif with_ddr3:
+             pll.create_clkout(self.cd_sys2x_i, 2*sys_clk_freq)
+         else:
+             pll.create_clkout(self.cd_sys, sys_clk_freq)
++
+         if cpu_clk_freq:
++            # CORE_CLK reaches the hard CPU over a dedicated path that exists
++            # only between PLL_R[0]'s *clkout1* and the core. Sitting on the
++            # right PLL is not enough - it has to be that specific output, and
++            # create_clkout() hands them out in creation order.
++            #
++            # In the single-PLL configuration cd_sys2x_i (or cd_sys) took
++            # clkout0 and the CPU landed on clkout1 by luck. Moving the memory
++            # clock to its own PLL freed clkout0, the CPU slid into it, and the
++            # core stopped getting a clock at all: no banner, no console, and a
++            # build reporting no errors whatsoever. Occupy clkout0 so the CPU
++            # keeps clkout1.
++            if ddr3_own_pll:
++                # Derived from the CPU frequency rather than from sys, so it
++                # always divides the same VCO by a whole number. Asking for an
++                # unrelated frequency here makes the solver give up with
++                # "No PLL config found" - the CPU pins the VCO to 800 MHz and
++                # sys is free to be anything, including something 800 does not
++                # divide by.
++                self.cd_pll_spare = ClockDomain()
++                pll.create_clkout(self.cd_pll_spare, cpu_clk_freq/8, with_reset=False)
++
++            cpu_clkout = pll.nclkouts
+             pll.create_clkout(self.cd_cpu, cpu_clk_freq, with_reset=False)
+-        platform.toolchain.additional_cst_commands.append("INS_LOC \"PLL\" PLL_R[0]") # Magic incantation for Gowin-AE350 CPU :)
++            assert cpu_clkout == 1, (
++                "AE350 CORE_CLK must come from PLL_R[0] clkout1, but the CPU "
++                f"was allocated clkout{cpu_clkout}. Anything created on this "
++                "PLL before the CPU shifts it; the failure mode on hardware is "
++                "a completely silent board."
++            )
++
++        # Whichever PLL ends up feeding the sys tree is the one sys resets from.
++        sys_pll = pll_ddr3 if ddr3_own_pll else pll
+ 
+         # SDRAM clock
+         if with_sdram:
+@@ -116,14 +183,149 @@ class _CRG(LiteXModule):
+                     i_RESETN   = ~self.reset,
+                     o_CLKOUT   = self.cd_sys.clk
+                 ),
+-                AsyncResetSynchronizer(self.cd_sys, ~pll.locked | self.reset),
++                AsyncResetSynchronizer(self.cd_sys, ~sys_pll.locked | self.reset),
++            ]
++
++            # The PHY's control signals cross into sys2x without synchronisers
++            # and are reported as the three worst paths in the design: `stop`
++            # reaching the clock gate, and the delay selects reaching the DQS
++            # blocks' HOLD. They are written once during calibration and held,
++            # so timing them against a 200 MHz clock is meaningless - but the
++            # Gowin toolchain has no other way to say so, since
++            # add_false_path_constraint() on this platform does nothing.
++            platform.toolchain.additional_sdc_commands += [
++                "set_false_path -to [get_pins {DHCE/CEN}]",
++                "set_false_path -to [get_pins {DQS/HOLD}]",
++                "set_false_path -to [get_pins {DQS_1/HOLD}]",
+             ]
++
++            # The DDR DLL is deliberately left for the placer to position.
++            #
++            # It calibrates the delay steps the DQS blocks use for read
++            # capture, so it looked like an obvious thing to pin, and Gowin's
++            # shared-DDR3 reference for this die pins it to DDRDLLM_BL. On this
++            # board that is measurably the wrong corner: read leveling was
++            # unchanged but memtest went from 51% to 99.999% data errors, and
++            # address errors from 5437/8192 to 8161/8192. The valid locations
++            # are DDRDLLM_BL / _BR / _TL / _TR; the vendor board evidently has
++            # its memory in different banks than this one, where the data sits
++            # in bank 6 and the address/command in bank 7.
++            #
++            # Left unconstrained the placer's own choice performs best so far,
++            # so pin this only with a measurement in hand.
++
++            # The clock divider that produces sys from the memory clock. The
++            # vendor reference pins its equivalent (fclkdiv) to LEFTSIDE[4],
++            # next to the memory banks; the valid names are LEFTSIDE[0..6] and
++            # the RIGHTSIDE equivalents.
++            platform.toolchain.additional_cst_commands.append("INS_LOC \"CLKDIV\" LEFTSIDE[4]")
+             # Init clock domain
+             self.comb += [
+                 self.cd_init.clk.eq(clk50),
+                 self.cd_init.rst.eq(pll.reset),
+             ]
+ 
++        # Gowin DDR3 IP clock
++        if with_gowin_ddr3:
++            # sys and the CPU keep the arrangement the block-RAM build proved -
++            # sys on PLL_R[0] clkout0, CORE_CLK on clkout1 - so the memory clock
++            # gets a PLL of its own, on the left-hand side next to the memory
++            # banks. This is the placement Gowin's AE350 shared-DDR3 reference
++            # and Sipeed's own ddr_memory_test_uart both use.
++            # vco_margin forces the vendor's own PLL solution rather than merely
++            # some solution that lands on 400 MHz.
++            #
++            # 800/2 and 1200/3 both give exactly 400 MHz, so compute_config() sees a
++            # tie and update_best_config() breaks it on the *higher* VCO, picking
++            # MDIV=24 / ODIV=3. Sipeed's ddr_memory_test_uart and Gowin's AE350
++            # reference both use MDIV=16 / ODIV=2, VCO 800 MHz - and an odd output
++            # divider is not a detail to wave through on a memory clock: a divide by
++            # 3 has no guaranteed 50% duty cycle, and DDR3 launches data on both
++            # edges, so duty error comes straight out of the data valid window.
++            #
++            # Margin 0.1 narrows 650-1300 MHz to 715-1170, leaving 800 as the only
++            # exact solution and pinning ODIV to 2.
++            #
++            # with_pll_init adds the startup sequencer every vendor-generated GW5A PLL
++            # carries and LiteX omits. It is what makes the vendor's PLL report
++            # DYN_ICP_SEL/DYN_LPF_SEL = TRUE: the loop filter is tuned at startup
++            # rather than left at a static guess, and the lock handed to the DDR3
++            # controller is qualified rather than the PLL's raw LOCK. The controller
++            # begins its own calibration off that lock, so it has to mean something.
++            self.pll_ddr3 = pll_ddr3 = GW5APLL(devicename=platform.devicename,
++                device=platform.device, name="PLL_DDR3", vco_margin=0.1,
++                with_pll_init=True)
++            self.comb += pll_ddr3.reset.eq(~por_done | self.rst)
++            pll_ddr3.register_clkin(clk50, 50e6)
++            # The IP stops its own memory clock while calibrating, through pll_stop on
++            # this output's clock enable. Without that it never finishes training.
++            #
++            # But the gated output must not be the PLL's *only* output, which is what
++            # made this deadlock: rst_n is released on lock, the IP only raises
++            # pll_stop once out of reset, and pll_stop is what enables the clock. With
++            # every output gated off there is nothing to break the circle - no lock,
++            # so no reset release, so no pll_stop, so no clock, so no lock - and the
++            # controller sits with init_calib_complete low forever.
++            #
++            # Sipeed's ddr_memory_test_uart puts the memory clock on clkout2 and leaves
++            # clkout0 (400 MHz) and clkout1 (50 MHz) enabled and ungated. Reproduce
++            # that layout exactly rather than gating clkout0 on its own.
++            pll_ddr3.create_clkout(self.cd_ddr3_spare0, gowin_ddr3_memory_clk_freq, with_reset=False)
++            pll_ddr3.create_clkout(self.cd_ddr3_spare1, 50e6,                       with_reset=False)
++            mem_clkout = pll_ddr3.nclkouts
++            pll_ddr3.create_clkout(self.cd_ddr3_mem, gowin_ddr3_memory_clk_freq,
++                with_reset = False,
++                enable     = self.ddr3_pll_stop,
++            )
++            assert mem_clkout == 2, f"memory clock expected on clkout2, got clkout{mem_clkout}"
++            platform.toolchain.additional_cst_commands.append("INS_LOC \"PLL_DDR3\" PLL_L[0]")
++
++            # Release the controller shortly after power-on, deliberately NOT waiting
++            # for the PLL to lock. Gating it on lock is the other half of the deadlock
++            # described above, and it is redundant anyway: pll_lock is wired straight
++            # into the IP, which sequences its own start-up from it. Sipeed do the
++            # same - their rst_n comes from a debounced button and knows nothing about
++            # the PLL.
++            rst_cnt = Signal(8)
++            self.sync.por += [
++                If(por_done & ~rst_cnt[7], rst_cnt.eq(rst_cnt + 1)),
++                self.ddr3_rst_n.eq(rst_cnt[7] & ~self.rst),
++            ]
++
++            # Running sys directly on the controller's clk_out was tried, to drop both
++            # clock crossings and double the bus clock at the same time. It does not
++            # fit: the SoC does not close timing at 100 MHz. Fmax comes out at
++            # 71.8 MHz with 752 violated endpoints, and every one of the worst paths
++            # starts at the AE350's dbus address register and runs through the bus
++            # decoder - combinational depth 10. At 50 MHz that same path leaves only
++            # 11% margin (Fmax 55.7), so 100 MHz would need the interconnect
++            # pipelined, not a constraint change.
++
++            # The memory clock, sys and the controller's user clock come from two
++            # different PLLs and a divider inside the IP. They are unrelated, and
++            # timing paths between them are meaningless; Sipeed's own project for
++            # this board declares the same three groups exclusive. Doing that needs
++            # all three to be named clocks, and this target otherwise constrains
++            # nothing but clk50.
++            #
++            # These are written by hand rather than through add_period_constraint()
++            # because that emits [get_nets {<signal>}], and the sys / memory clock
++            # nets do not survive synthesis: each is a plain alias of a PLL output,
++            # which GowinSynthesis collapses into the driver's net, and the SDC then
++            # fails with "TA2003 Can't set timing constraint to object sys_clk".
++            # (ddr3_user_clk survives only because a black box drives it.) The PLL
++            # instance names are stable - they are the same ones INS_LOC pins above.
++            platform.toolchain.additional_sdc_commands += [
++                "create_clock -name sys_clk -period {:.3f} [get_pins {{PLL/CLKOUT0}}]".format(
++                    1e9/sys_clk_freq),
++                "create_clock -name ddr3_mem_clk -period {:.3f} [get_pins {{PLL_DDR3/CLKOUT2}}]".format(
++                    1e9/gowin_ddr3_memory_clk_freq),
++                "set_clock_groups -exclusive"
++                " -group [get_clocks {ddr3_mem_clk}]"
++                " -group [get_clocks {ddr3_user_clk}]"
++                " -group [get_clocks {sys_clk}]",
++            ]
++
+         # Video Clock
+         if with_video_pll:
+             self.cd_hdmi   = ClockDomain()
+@@ -163,6 +365,10 @@ class BaseSoC(SoCCore):
+         with_video_terminal    = False,
+         with_video_framebuffer = False,
+         with_ddr3              = False,
++        with_gowin_ddr3        = False,
++        gowin_ddr3_netlist     = None,
++        gowin_pll_init         = None,
++        gowin_ddr3_l2_size     = 4096,
+         with_sdram             = False,
+         sdram_model            = "sipeed",
+         sdram_rate             = "1:2",
+@@ -183,9 +389,25 @@ class BaseSoC(SoCCore):
+ 
+         # CRG --------------------------------------------------------------------------------------
+         cpu_clk_freq = int(800e6) if kwargs["cpu_type"] == "gowin_ae350" else 0
++        assert not (with_ddr3 and with_gowin_ddr3), \
++            "--with-ddr3 (litedram/GW5DDRPHY) and --with-gowin-ddr3 (vendor IP) drive the same pins."
++
++        # PLL_INIT is a plain module, not a synthesiser primitive: without its source
++        # the build stops at "EX3937 Instantiating unknown module 'PLL_INIT'" and the
++        # PLL is left a black box. Add it before the CRG instantiates the PLL.
++        if with_gowin_ddr3:
++            if gowin_pll_init is None:
++                raise ValueError(
++                    "--with-gowin-ddr3 needs --gowin-pll-init: the memory PLL is wrapped in "
++                    "Gowin's PLL_INIT sequencer, whose source ships with the generated IP "
++                    "(pll_init.v) and is not part of the toolchain."
++                )
++            platform.add_source(gowin_pll_init)
++
+         self.crg = _CRG(platform, sys_clk_freq, cpu_clk_freq,
+-            with_sdram     = with_sdram,
+-            with_ddr3      = with_ddr3,
++            with_sdram      = with_sdram,
++            with_ddr3       = with_ddr3,
++            with_gowin_ddr3 = with_gowin_ddr3,
+             with_video_pll = with_video_terminal or with_video_framebuffer or with_video_colorbars,
+             with_pcie      = with_pcie,
+             with_ethernet  = with_ethernet or with_etherbone
+@@ -211,6 +433,106 @@ class BaseSoC(SoCCore):
+                 l2_cache_size = 0#kwargs.get("l2_size", 8192)
+             )
+ 
++        # DDR3 SDRAM via the Gowin vendor IP ----------------------------------------------------------
++        #
++        # The alternative to GW5DDRPHY above. This is the controller Gowin's own
++        # designs use - the RiscV_AE350_SOC IP has none of its own and compiles this
++        # same core into its wrapper - and it drives the PHY at a 1:4 ratio, so the
++        # board's full 32-bit bus runs at DDR3-800 off a 400 MHz memory clock.
++        if with_gowin_ddr3:
++            from litex.soc.cores.ram.gowin_ddr3 import GowinDDR3
++            from litedram.common import LiteDRAMNativePort
++            from litedram.frontend.adapter import LiteDRAMNativePortCDC
++            from litedram.frontend.wishbone import LiteDRAMWishbone2Native
++
++            self.ddr3 = GowinDDR3(
++                platform        = platform,
++                pads            = platform.request("ddram", 1), # Full 32-bit bus.
++                clk             = self.crg.clk50,               # Raw oscillator, not a PLL output.
++                memory_clk      = self.crg.cd_ddr3_mem.clk,
++                pll_lock        = self.crg.pll_ddr3.locked,
++                pll_stop        = self.crg.ddr3_pll_stop,
++                rst_n           = self.crg.ddr3_rst_n,
++                netlist         = gowin_ddr3_netlist,
++                memory_clk_freq = 400e6,
++                # Both placements are from Sipeed's ddr_memory_test_uart for this
++                # board. DDRDLLM_BL is the bottom-left DLL, next to the memory
++                # banks; note it was measurably *wrong* for GW5DDRPHY, whose DLL is
++                # a different instance in a different place.
++                dll_loc         = "DDRDLLM_BL",
++                clkdiv_loc      = "LEFTSIDE[4]",
++            )
++
++            # The controller's user clock is memory_clk/4 = 100 MHz while sys stays at
++            # 50, so cross domains rather than re-clocking a SoC that will not close
++            # timing at 100 (see the CRG).
++            port = LiteDRAMNativePort("both",
++                address_width = self.ddr3.port.address_width,
++                data_width    = self.ddr3.port.data_width,
++                clock_domain  = "sys",
++            )
++            self.submodules += LiteDRAMNativePortCDC(port, self.ddr3.port)
++
++            # Nothing answers on the bus until calibration completes: the port logic
++            # is held in reset by init_calib_complete, so an access before the memory
++            # is trained stalls until the SoC's bus timeout retires it.
++            #
++            # That makes debugging awkward when DDR3 *is* main_ram, because the BIOS
++            # memtests main_ram before it offers a console: every access costs a full
++            # bus timeout, memspeed then repeats that half a million times, and the
++            # console never appears - so the ddr3_init CSR that would say whether the
++            # controller trained cannot be read. Combining it with block RAM main_ram
++            # gives DDR3 a region of its own instead: the BIOS memtests the block RAM,
++            # reaches the console, and DDR3 can be poked by hand from there.
++            if self.integrated_main_ram_size:
++                slave_name, origin = "ddr3", 0x6000_0000
++            else:
++                slave_name, origin = "main_ram", self.mem_map["main_ram"]
++            # SoCRegion rounds a size up to the next power of two and additionally
++            # requires the origin to be aligned on it, so a region that merely fits
++            # below the ROM is not necessarily accepted. Round the size down to a
++            # power of two and then down again until it divides the origin: at
++            # 0x4000_0000 that keeps the whole gigabyte, at 0x6000_0000 it gives the
++            # 512 MiB that fit under the ROM.
++            avail = self.cpu.mem_map["rom"] - origin
++            size  = min(self.ddr3.size, 1 << (avail.bit_length() - 1))
++            while origin % size:
++                size >>= 1
++            region = SoCRegion(origin=origin, size=size, mode="rwx")
++            wb     = wishbone.Interface(
++                data_width    = self.bus.data_width,
++                address_width = 32,
++                addressing    = "word",
++            )
++            self.bus.add_slave(slave_name, wb, region)
++
++            # L2 cache - the arrangement add_sdram() gives every litedram SoC, and the
++            # reason this path was slow without one.
++            #
++            # Its slave side is the port's full 256 bits, so one miss fetches a whole
++            # 32-byte line and the next seven words are hits. That also hands the
++            # bridge a Wishbone as wide as the port, so it takes its simple path
++            # rather than the burst upconverter - whose own line cache is dead code
++            # behind an AHB CPU anyway: it retires the line on wishbone_last, and
++            # AHB2Wishbone never signals an incrementing burst, so the flag is always
++            # set. Making that line persist was tried and reproducibly corrupts
++            # memory, for reasons not yet understood; this is the supported route to
++            # the same effect.
++            l2_size  = max(gowin_ddr3_l2_size, 2*port.data_width//8)
++            l2_size  = 1 << (l2_size.bit_length() - 1)   # Round down to a power of 2.
++            dram_wb  = wishbone.Interface(data_width=port.data_width, address_width=32,
++                                          addressing="word")
++            self.ddr3_l2 = FullMemoryWE()(wishbone.Cache(
++                cachesize = l2_size//4,
++                master    = wb,
++                slave     = dram_wb,
++                reverse   = True,
++            ))
++            self.add_config("L2_SIZE", l2_size)
++
++            self.submodules += LiteDRAMWishbone2Native(dram_wb, port,
++                                                       base_address=region.origin)
++
+         # Video ------------------------------------------------------------------------------------
+         if with_video_terminal or with_video_framebuffer or with_video_colorbars:
+             hdmi_pads = platform.request("hdmi")
+@@ -280,6 +602,18 @@ def main():
+ 
+     # Memory.
+     parser.add_target_argument("--with-ddr3",      action="store_true", help="Enable optional DDR3 module.")
++    parser.add_target_argument("--with-gowin-ddr3", action="store_true",
++        help="Enable DDR3 through the Gowin DDR3 Memory Interface IP instead of litedram's GW5DDRPHY.")
++    parser.add_target_argument("--gowin-ddr3-netlist", default=None,
++        help="Path to the generated DDR3_Memory_Interface_Top netlist (.v), built for this exact device.")
++    parser.add_target_argument("--gowin-ddr3-l2-size", default=4096, type=int,
++        help="L2 cache size in bytes in front of the Gowin DDR3 controller. 4096 is the "
++             "largest that still closes timing at 50 MHz: 8192 leaves sys_clk at 49.2 MHz "
++             "with 21 violated endpoints, and buys no measurable throughput.")
++    parser.add_target_argument("--gowin-pll-init", default=None,
++        help="Path to Gowin's pll_init.v, required with --with-gowin-ddr3. The memory PLL is wrapped in "
++             "PLL_INIT the way every vendor-generated GW5A PLL is; it is a plain module rather than a "
++             "synthesiser primitive, so its source has to be on the file list.")
+     parser.add_target_argument("--with-sdram",     action="store_true", help="Enable optional SDRAM module.")
+     parser.add_target_argument("--sdram-model",    default="sipeed",
+         choices=[
+@@ -313,6 +647,10 @@ def main():
+         with_video_terminal    = args.with_video_terminal,
+         with_video_framebuffer = args.with_video_framebuffer,
+         with_ddr3              = args.with_ddr3,
++        with_gowin_ddr3        = args.with_gowin_ddr3,
++        gowin_ddr3_netlist     = args.gowin_ddr3_netlist,
++        gowin_pll_init         = args.gowin_pll_init,
++        gowin_ddr3_l2_size     = args.gowin_ddr3_l2_size,
+         with_sdram             = args.with_sdram,
+         sdram_model            = args.sdram_model,
+         with_pcie              = args.with_pcie,

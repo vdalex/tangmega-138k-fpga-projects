@@ -1,0 +1,38 @@
+Working configuration: AE350 + 256 KiB of main RAM in block RAM.
+Serial console on the on-board BL616 bridge, 115200 8N1.
+
+        __   _ __      _  __
+       / /  (_) /____ | |/_/
+      / /__/ / __/ -_)>  <
+     /____/_/\__/\__/_/|_|
+   Build your hardware, easily!
+
+ (c) Copyright 2012-2026 Enjoy-Digital
+ (c) Copyright 2007-2015 M-Labs
+
+ BIOS built on Sep  6 2026 09:57:14
+ BIOS CRC passed (2cc827b3)
+
+ LiteX git sha1: cfb382f54
+
+--================ SoC =================--
+CPU:            Gowin AE350 @ 800MHz
+BUS:            wishbone 32-bit data/32-bit addr
+CSR:            32-bit data big ordering
+ROM:            128.0KiB
+SRAM:           8.0KiB
+
+--================ Boot ================--
+Booting from serial...
+Press Q or ESC to abort boot completely.
+sL5DdSMmkekro
+             Timeout
+No boot medium found
+
+--============== Console ===============--
+
+litex>
+
+Note: the banner timestamp is the OrangePi's - the BIOS is cross-compiled
+there and embedded into the bitstream on the PC. "BIOS CRC passed" is the
+cheapest proof that the transfer was byte-exact.

@@ -1,0 +1,108 @@
+diff --git a/litex/soc/cores/clock/gowin_gw5a.py b/litex/soc/cores/clock/gowin_gw5a.py
+index 28d7821a7..504f6423c 100644
+--- a/litex/soc/cores/clock/gowin_gw5a.py
++++ b/litex/soc/cores/clock/gowin_gw5a.py
+@@ -16,7 +16,24 @@ from litex.soc.cores.clock.common import *
+ class GW5APLL(LiteXModule):
+     nclkouts_max = 7
+ 
+-    def __init__(self, devicename, device, vco_margin=0, name=None):
++    def __init__(self, devicename, device, vco_margin=0, name=None, with_pll_init=False):
++        # with_pll_init wraps the PLL in Gowin's PLL_INIT startup sequencer, the way
++        # every PLL the IP Core Generator emits for a GW5A part is wrapped.
++        #
++        # PLL_INIT holds the PLL in reset, then walks a table of charge-pump and
++        # loop-filter settings indexed by the feedback divider, and only reports lock
++        # once one of them holds. Without it the loop filter keeps whatever static
++        # value the toolchain picked and `locked` is the PLL's raw LOCK.
++        #
++        # It costs nothing for a lightly loaded clock tree and is why the vendor's
++        # generated PLLs carry DYN_ICP_SEL / DYN_LPF_SEL = TRUE, but it matters for a
++        # memory clock, where the DDR3 controller's own calibration depends on the
++        # clock being clean by the time it is told the PLL has locked.
++        #
++        # PLL_INIT is a plain Verilog module, not a synthesiser primitive - both the
++        # Education and the commercial toolchain reject it as an unknown module
++        # (EX3937) unless its source is on the file list. Add it with
++        # platform.add_source() before building.
+         check_margin(vco_margin, "VCO margin")
+         self.logger = logging.getLogger("GW5APLL")
+         self.logger.info("Creating GW5APLL.".format())
+@@ -24,12 +41,14 @@ class GW5APLL(LiteXModule):
+         self.devicename = devicename
+         self.name       = name
+         self.vco_margin = vco_margin
++        self.with_pll_init = with_pll_init
+         self.reset      = Signal()
+         self.locked     = Signal()
+         self.clkin_freq = None
+         self.vcxo_freq  = None
+         self.nclkouts   = 0
+         self.clkouts    = {}
++        self.clkouts_en = {} # Per-output dynamic clock enable (ENCLKn), when not always-on.
+         self.config     = {}
+         self.params     = {}
+         self.vco_freq_range = self.get_vco_freq_range(device)
+@@ -63,13 +86,18 @@ class GW5APLL(LiteXModule):
+         self.clkin_freq = freq
+         register_clkin_log(self.logger, clkin, freq)
+ 
+-    def create_clkout(self, cd, freq, phase=0, margin=1e-2, with_reset=True):
++    def create_clkout(self, cd, freq, phase=0, margin=1e-2, with_reset=True, enable=None):
++        # enable: drive this output's ENCLKn from a Signal instead of tying it high. Memory
++        # controllers need this: Gowin's DDR3 IP gates its own memory clock through pll_stop
++        # while it calibrates, and cannot do so if the PLL output is always enabled.
+         check_freq_positive(freq, "Output clock frequency")
+         check_margin(margin)
+         check_clkout_cd_unused(self, cd)
+         check_clkout_count(self.nclkouts, self.nclkouts_max)
+         clkout = Signal()
+         self.clkouts[self.nclkouts] = ClkOut(clkout, freq, phase, margin)
++        if enable is not None:
++            self.clkouts_en[self.nclkouts] = enable
+         connect_clkout(self, cd, clkout, reset=~self.locked, with_reset=with_reset)
+         create_clkout_log(self.logger, cd.name, freq, margin, self.nclkouts)
+         self.nclkouts += 1
+@@ -291,6 +319,42 @@ class GW5APLL(LiteXModule):
+                 i_LPFCAP      = Constant(0, 2), # Dynamic LPFCAP control.
+             )
+ 
++        # PLL_INIT startup sequencer (see __init__).
++        if self.with_pll_init:
++            if primitive_name != "PLL":
++                raise ValueError("PLL_INIT is only defined for the GW5A(S)T 'PLL' primitive.")
++            pll_reset  = Signal() # PLL_INIT -> PLL.RESET
++            pll_locked = Signal() # PLL.LOCK -> PLL_INIT (raw)
++            icpsel     = Signal(6)
++            lpfres     = Signal(3)
++            self.params.update(
++                p_DYN_ICP_SEL = "TRUE",
++                p_DYN_LPF_SEL = "TRUE",
++                i_ICPSEL      = icpsel,
++                i_LPFRES      = lpfres,
++                i_LPFCAP      = Constant(0, 2),
++                i_RESET       = pll_reset,
++                o_LOCK        = pll_locked,
++            )
++            self.specials += Instance("PLL_INIT",
++                name       = (self.name + "_INIT") if self.name else "",
++                # CLKIN is the initialisation clock, in nanoseconds; MULTI_FAC selects
++                # the settings table and must be the feedback divider actually used.
++                p_CLK_PERIOD = int(1e9/self.clkin_freq),
++                p_MULTI_FAC  = config["mdiv"],
++                i_CLKIN      = self.clkin,
++                i_I_RST      = self.reset,
++                i_PLLLOCK    = pll_locked,
++                o_O_RST      = pll_reset,
++                o_ICPSEL     = icpsel,
++                o_LPFRES     = lpfres,
++                o_O_LOCK     = self.locked, # Qualified lock replaces the raw one.
++            )
++
++        # Outputs whose clock enable is driven rather than tied high.
++        for i, enable in self.clkouts_en.items():
++            self.params["i_ENCLK%d" % i] = enable
++
+         for i in range(0, len(self.clkouts)):
+             clkout = self.clkouts[i]
+             self.params["o_CLKOUT%d" % i] = clkout.clk

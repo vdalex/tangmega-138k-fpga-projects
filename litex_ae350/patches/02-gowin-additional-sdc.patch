@@ -1,0 +1,24 @@
+diff --git a/litex/build/gowin/gowin.py b/litex/build/gowin/gowin.py
+index dc671b5bf..6428d99c8 100644
+--- a/litex/build/gowin/gowin.py
++++ b/litex/build/gowin/gowin.py
+@@ -143,6 +143,7 @@ class GowinToolchain(GenericToolchain):
+         super().__init__()
+         self.options = {}
+         self.additional_cst_commands = []
++        self.additional_sdc_commands = []
+         self.additional_tcl_commands = []
+ 
+     def finalize(self):
+@@ -217,6 +218,11 @@ class GowinToolchain(GenericToolchain):
+                 sdc.append(f"create_clock -name {name} -period {str(period)} [get_ports {{{clk_sig}}}]")
+             else:
+                 sdc.append(f"create_clock -name {name} -period {str(period)} [get_nets {{{clk_sig}}}]")
++        # Mirrors additional_cst_commands: lets a target add set_false_path,
++        # set_clock_groups or set_multicycle_path, which this toolchain
++        # otherwise has no way to express - add_false_path_constraint() on the
++        # Gowin platform is a no-op.
++        sdc.extend(self.additional_sdc_commands)
+         tools.write_to_file(f"{self._build_name}.sdc", "\n".join(sdc))
+         return (f"{self._build_name}.sdc", "SDC")
+ 

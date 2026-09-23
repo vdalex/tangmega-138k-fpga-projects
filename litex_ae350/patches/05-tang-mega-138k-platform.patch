@@ -1,0 +1,112 @@
+diff --git a/litex_boards/platforms/sipeed_tang_mega_138k.py b/litex_boards/platforms/sipeed_tang_mega_138k.py
+index e7a0a539..df5c93b1 100644
+--- a/litex_boards/platforms/sipeed_tang_mega_138k.py
++++ b/litex_boards/platforms/sipeed_tang_mega_138k.py
+@@ -56,31 +56,91 @@ _io = [
+     ),
+ 
+     ## DDR3 SDRAM MT41J256M16JT-125
+-    # FIXME: Tang Mega 138k: Two chips (but only one is used here.
++    # Two devices are fitted; only the first x16 is wired up here, so the bus
++    # is 16 bits and there are two DQS pairs. Every pin below was checked
++    # against Sipeed's own ddr_memory_test_uart constraints for this board.
++    #
++    # Attributes are per-subsignal and there is no group-level IOStandard or
++    # Misc, matching sipeed_tang_mega_138k_pro and sipeed_tang_console. That
++    # shape matters: a group-level attribute is *appended* to the subsignal
++    # one rather than overridden, and the generated .cst ends up with two
++    # IO_TYPEs on a single IO_PORT line.
++    #
++    # Two further corrections against what was here before:
++    #   * SSTL15_I / SSTL15D_I are rejected outright by Gowin 1.9.11.03 on a
++    #     GW5AST-138C ("CT1109 : Illegal attribute type"). The sibling boards
++    #     using the same GW5DDRPHY all use plain SSTL15 / SSTL15D.
++    #   * BANK_VCCIO=1.5 conflicts with the ELVDS buffers the PHY instantiates
++    #     for the clock and DQS pairs ("CT1136 : Bank N vccio is locked ...
++    #     conflicting BANK_VCCIO"). The other two boards omit it and let the
++    #     tool infer the bank voltage from the IO standard.
+     ("ddram", 0,
+         Subsignal("a", Pins(
+             "M1 K2 G2 J4 J2 H2 G3 J1",
+             "J5 H5 L1 H3 K4 K1 D1"),   # R1(A15): Unused
++            IOStandard("SSTL15"), Misc("DRIVE=12"),
+         ),
+-        Subsignal("ba",      Pins("P5 P2 M6")),
+-        Subsignal("ras_n",   Pins("L5")),
+-        Subsignal("cas_n",   Pins("L4")),
+-        Subsignal("we_n",    Pins("M5")),
+-        Subsignal("cs_n",    Pins("P4")),
+-        Subsignal("dm",      Pins("AA4 V7")),
++        Subsignal("ba",      Pins("P5 P2 M6"), IOStandard("SSTL15"),  Misc("DRIVE=12")),
++        Subsignal("ras_n",   Pins("L5"),       IOStandard("SSTL15"),  Misc("DRIVE=12")),
++        Subsignal("cas_n",   Pins("L4"),       IOStandard("SSTL15"),  Misc("DRIVE=12")),
++        Subsignal("we_n",    Pins("M5"),       IOStandard("SSTL15"),  Misc("DRIVE=12")),
++        Subsignal("cs_n",    Pins("P4"),       IOStandard("SSTL15"),  Misc("DRIVE=12")),
++        Subsignal("dm",      Pins("AA4 V7"),   IOStandard("SSTL15"),  Misc("DRIVE=12")),
+         Subsignal("dq",      Pins(
+             " Y4 AB3 AA5 V4 AA1 AB2 AB5 AB1",
+             "AA8  Y8 AB7 Y7 AB8  W9 AB6  Y9"),
++            IOStandard("SSTL15"), Misc("DRIVE=12"),
+         ),
+-        Subsignal("dqs_p",   Pins("Y3 V9"),  IOStandard("SSTL15D_I"), Misc("PULL_MODE=NONE DRIVE=8 BANK_VCCIO=1.5")),
+-        Subsignal("dqs_n",   Pins("AA3 V8"), IOStandard("SSTL15D_I"), Misc("PULL_MODE=NONE DRIVE=8 BANK_VCCIO=1.5")),
+-        Subsignal("clk_p",   Pins("L3"),     IOStandard("SSTL15D_I"), Misc("PULL_MODE=NONE DRIVE=8 BANK_VCCIO=1.5")),
+-        Subsignal("clk_n",   Pins("K3"),     IOStandard("SSTL15D_I"), Misc("PULL_MODE=NONE DRIVE=8 BANK_VCCIO=1.5")),
+-        Subsignal("cke",     Pins("K6"),     Misc("PULL_MODE=NONE DRIVE=8 BANK_VCCIO=1.5")),
+-        Subsignal("odt",     Pins("M2")),
+-        Subsignal("reset_n", Pins("L6")),
+-        IOStandard("SSTL15_I"),
+-        Misc("PULL_MODE=NONE DRIVE=12 BANK_VCCIO=1.5"),
++        Subsignal("dqs_p",   Pins("Y3 V9"),    IOStandard("SSTL15D"), Misc("DRIVE=8")),
++        Subsignal("dqs_n",   Pins("AA3 V8"),   IOStandard("SSTL15D"), Misc("DRIVE=8")),
++        Subsignal("clk_p",   Pins("L3"),       IOStandard("SSTL15D"), Misc("DRIVE=8")),
++        Subsignal("clk_n",   Pins("K3"),       IOStandard("SSTL15D"), Misc("DRIVE=8")),
++        Subsignal("cke",     Pins("K6"),       IOStandard("SSTL15"),  Misc("DRIVE=4")),
++        Subsignal("odt",     Pins("M2"),       IOStandard("SSTL15"),  Misc("DRIVE=12")),
++        Subsignal("reset_n", Pins("L6"),       IOStandard("SSTL15"),  Misc("DRIVE=12")),
++    ),
++
++    # ddram:1 - the same two chips, but the full 32-bit bus.
++    #
++    # The board carries two x16 DDR3 devices sharing one address/command bus, so
++    # the memory is 32 bits wide and 1 GiB total. ddram:0 above describes only the
++    # lower half, because that is all GW5DDRPHY drives; the Gowin DDR3 Memory
++    # Interface IP drives both, so it needs this. Only one of the two may be
++    # requested in a design - they share pins.
++    #
++    # Drive strengths here are Sipeed's (DRIVE=8 throughout), which is what their
++    # own ddr_memory_test_uart uses with this IP, rather than the values above
++    # that were tuned while trying to get GW5DDRPHY to calibrate. BANK_VCCIO=1.5
++    # is set here, unlike on ddram:0: the conflict that forced it out was with the
++    # ELVDS buffers GW5DDRPHY instantiates, and the vendor IP instantiates none.
++    # Sipeed set it on every DDR3 pin, and a bank voltage the tool merely infers
++    # is a poor thing to leave to chance when the receiver thresholds depend on it.
++    ("ddram", 1,
++        Subsignal("a", Pins(
++            "M1 K2 G2 J4 J2 H2 G3 J1",
++            "J5 H5 L1 H3 K4 K1 D1"),   # R1(A15): Unused
++            IOStandard("SSTL15"), Misc("PULL_MODE=NONE DRIVE=8 BANK_VCCIO=1.5"),
++        ),
++        Subsignal("ba",      Pins("P5 P2 M6"),     IOStandard("SSTL15"),  Misc("PULL_MODE=NONE DRIVE=8 BANK_VCCIO=1.5")),
++        Subsignal("ras_n",   Pins("L5"),           IOStandard("SSTL15"),  Misc("PULL_MODE=NONE DRIVE=8 BANK_VCCIO=1.5")),
++        Subsignal("cas_n",   Pins("L4"),           IOStandard("SSTL15"),  Misc("PULL_MODE=NONE DRIVE=8 BANK_VCCIO=1.5")),
++        Subsignal("we_n",    Pins("M5"),           IOStandard("SSTL15"),  Misc("PULL_MODE=NONE DRIVE=8 BANK_VCCIO=1.5")),
++        Subsignal("cs_n",    Pins("P4"),           IOStandard("SSTL15"),  Misc("PULL_MODE=NONE DRIVE=8 BANK_VCCIO=1.5")),
++        Subsignal("dm",      Pins("AA4 V7 T6 W1"), IOStandard("SSTL15"),  Misc("PULL_MODE=NONE DRIVE=8 BANK_VCCIO=1.5")),
++        Subsignal("dq",      Pins(
++            " Y4 AB3 AA5 V4 AA1 AB2 AB5 AB1",
++            "AA8  Y8 AB7 Y7 AB8  W9 AB6  Y9",
++            " U5  R6  U6 R4  Y6  T4  V5  T5",
++            " W2  Y1  T1 U3  U2  V2  U1  Y2"),
++            IOStandard("SSTL15"), Misc("PULL_MODE=NONE DRIVE=8 BANK_VCCIO=1.5"),
++        ),
++        Subsignal("dqs_p",   Pins("Y3  V9  W6 R3"), IOStandard("SSTL15D"), Misc("PULL_MODE=NONE DRIVE=8 BANK_VCCIO=1.5")),
++        Subsignal("dqs_n",   Pins("AA3 V8  W5 R2"), IOStandard("SSTL15D"), Misc("PULL_MODE=NONE DRIVE=8 BANK_VCCIO=1.5")),
++        Subsignal("clk_p",   Pins("L3"),            IOStandard("SSTL15D"), Misc("PULL_MODE=NONE DRIVE=8 BANK_VCCIO=1.5")),
++        Subsignal("clk_n",   Pins("K3"),            IOStandard("SSTL15D"), Misc("PULL_MODE=NONE DRIVE=8 BANK_VCCIO=1.5")),
++        Subsignal("cke",     Pins("K6"),            IOStandard("SSTL15"),  Misc("PULL_MODE=NONE DRIVE=8 BANK_VCCIO=1.5")),
++        Subsignal("odt",     Pins("M2"),            IOStandard("SSTL15"),  Misc("PULL_MODE=NONE DRIVE=8 BANK_VCCIO=1.5")),
++        Subsignal("reset_n", Pins("L6"),            IOStandard("SSTL15"),  Misc("PULL_MODE=NONE DRIVE=8 BANK_VCCIO=1.5")),
+     ),
+ ]
+ 

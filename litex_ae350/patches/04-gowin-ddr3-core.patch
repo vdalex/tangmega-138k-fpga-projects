@@ -1,0 +1,288 @@
+diff --git a/litex/soc/cores/ram/gowin_ddr3.py b/litex/soc/cores/ram/gowin_ddr3.py
+new file mode 100644
+index 000000000..b6de0113a
+--- /dev/null
++++ b/litex/soc/cores/ram/gowin_ddr3.py
+@@ -0,0 +1,282 @@
++#
++# This file is part of LiteX.
++#
++# SPDX-License-Identifier: BSD-2-Clause
++
++"""Gowin DDR3 Memory Interface IP, wrapped as a LiteDRAM native port.
++
++Gowin's "DDR3 Memory Interface" is a soft controller driving the GW5A hard DDR
++PHY, produced by the IP Core Generator. It is worth preferring over litedram's
++GW5DDRPHY on Arora-V parts for two reasons:
++
++- It is the controller Gowin's own designs use. The RiscV_AE350_SOC IP has no
++  DDR3 controller of its own: its generated wrapper compiles `ddr3_1_4code_hs.v`
++  and `DDR3_TOP.v` - this same core - alongside an arbiter and a pair of
++  clock-crossing FIFOs. So this is what the hard CPU talks to on a vendor board.
++- It runs the PHY at a 1:4 clock ratio where GW5DDRPHY runs 1:2, so the same
++  controller clock buys twice the data rate. 400 MHz memory clock / 100 MHz user
++  clock is DDR3-800; GW5DDRPHY would need a 200 MHz controller clock to match.
++
++The IP is generated for one exact device and configuration and emitted as an
++encrypted, pre-synthesised netlist. Nothing here generates it - pass the path to
++an existing `<name>.v` and check that its device matches the target. The whole
++configuration lives in a plain-text `gwmc_param.v` beside it (DQ_WIDTH, ROW_WIDTH,
++tCK, CL, ...); the parameters below must agree with it, so read it rather than
++guessing. Note the netlist builds fine under the Education edition - only
++*generating* a new configuration needs a licence.
++
++User-side interface, from the generated instantiation template:
++
++    cmd[2:0]/cmd_en/addr[28:0]  + cmd_ready       command
++    wr_data[255:0]/wr_data_en/wr_data_end
++      /wr_data_mask[31:0]       + wr_data_rdy     write
++    rd_data[255:0]              + rd_data_valid   read (no back-pressure!)
++
++with cmd 3'b000 = write and 3'b001 = read, a write mask that is active *high*
++meaning "leave this byte alone", and an address counting DQ-width words - so a
++burst of 8 advances it by 8.
++"""
++
++from migen import *
++from migen.genlib.resetsync import AsyncResetSynchronizer
++
++from litex.gen import *
++
++from litex.soc.interconnect import stream
++from litex.soc.interconnect.csr import CSRStatus
++
++from litedram.common import LiteDRAMNativePort
++
++# Gowin DDR3 ---------------------------------------------------------------------------------------
++
++class GowinDDR3(LiteXModule):
++    """Gowin DDR3 Memory Interface IP exposing a LiteDRAM native port.
++
++    The port runs on the IP's `clk_out` (memory_clk / nck_per_clk). By default
++    this module owns that clock domain and the SoC reaches it through a
++    LiteDRAMNativePortCDC. Pass `create_clock_domain=False` and drive the SoC's
++    own domain from `clk_out` to drop the crossing entirely - what the vendor's
++    designs do, and both faster and simpler, at the cost of a SoC that has no
++    clock at all if the controller never starts.
++
++    Parameters
++    ----------
++    pads : Record
++        DDR3 pads (a, ba, ras_n, cas_n, we_n, cs_n, dm, dq, dqs_p, dqs_n,
++        clk_p, clk_n, cke, odt, reset_n).
++    clk : Signal
++        Reference clock, the raw board oscillator (not a PLL output).
++    memory_clk : Signal
++        Memory clock, tCK from gwmc_param.v (400 MHz for tCK=2500).
++    pll_lock : Signal
++        Lock output of the PLL generating memory_clk.
++    pll_stop : Signal
++        Driven by this module; must gate that PLL output's clock enable. The IP
++        stops the memory clock while it calibrates and will not come up without
++        this connected.
++    rst_n : Signal
++        Active-low reset, released once the PLL has been locked for a while.
++    """
++    def __init__(self, platform, pads, clk, memory_clk, pll_lock, pll_stop, rst_n,
++        netlist         = None,
++        memory_clk_freq = 400e6,
++        module_name     = "DDR3_Memory_Interface_Top",
++        instance_name   = "ddr3",
++        clock_domain    = "ddr3",
++        create_clock_domain = True,
++        clk_out         = None,
++        dq_width      = 32,
++        bank_width    = 3,
++        row_width     = 15,
++        col_width     = 10,
++        nck_per_clk   = 4,
++        burst_length  = 8,
++        rd_fifo_depth = 8,
++        dll_loc       = None,
++        clkdiv_loc    = None):
++
++        self.init_done = Signal() # init_calib_complete: DDR3 trained and usable.
++
++        # Readable from software. Worth having: nothing on the bus answers until
++        # calibration completes, so a controller that never trains looks like a CPU
++        # hang on the first access rather than like a memory fault.
++        self.init = CSRStatus(description="Gowin DDR3 calibration complete.")
++        self.comb += self.init.status.eq(self.init_done)
++
++        data_width = dq_width * burst_length
++        addr_shift = log2_int(burst_length)
++
++        # 1 GiB for a 32-bit bus with 15-bit rows, addressed in native-port words.
++        self.port = port = LiteDRAMNativePort(
++            mode          = "both",
++            address_width = bank_width + row_width + col_width - addr_shift,
++            data_width    = data_width,
++            clock_domain  = clock_domain,
++        )
++        self.size = (2**port.address_width) * data_width//8
++
++        # Clocking ---------------------------------------------------------------------------------
++        # clk_out is generated by the IP, not by a PLL: it is memory_clk divided by
++        # nck_per_clk inside the PHY. Everything on the user side runs on it.
++        #
++        # Either this module owns that domain and the SoC crosses into it, or the SoC
++        # runs on it directly and there is no crossing at all. The latter is what the
++        # vendor's own designs do, and it is both faster and simpler - but it means
++        # the whole SoC stops if the IP never produces a clock, so the caller has to
++        # choose. With create_clock_domain=False the caller drives clock_domain's
++        # clock from self.clk_out and provides its reset.
++        # Pass clk_out to have the IP drive an existing clock net directly. That
++        # matters for constraints, not just tidiness: an `assign sys_clk = <net>`
++        # alias is collapsed into its driver by GowinSynthesis, and the SDC then
++        # fails with "TA2003 Can't set timing constraint to object sys_clk". A net
++        # driven by this black box survives and can be named.
++        self.clk_freq = memory_clk_freq/nck_per_clk
++        self.clk_out  = clk_out if clk_out is not None else Signal()
++
++        if create_clock_domain:
++            self.cd_ddr3 = ClockDomain(clock_domain)
++            self.comb += self.cd_ddr3.clk.eq(self.clk_out)
++            # Reset with the controller, NOT with init_calib_complete.
++            #
++            # Gating this domain on calibration is tempting - it would stop anything
++            # reaching an untrained memory - but it breaks the clock crossing. The CDC
++            # is an AsyncFIFO with gray-coded pointers built with
++            # with_common_rst=False, so each side is reset by its own domain.
++            # Releasing this side late, after the other side has already pushed
++            # commands, leaves the two pointer sets inconsistent and the FIFO wedged
++            # for good: the memory then never works even once it has trained.
++            #
++            # Holding off early accesses is the controller's job anyway - it keeps
++            # cmd_ready low until it is ready, which back-pressures the bridge.
++            self.specials += AsyncResetSynchronizer(self.cd_ddr3, ~rst_n)
++            platform.add_period_constraint(self.clk_out, 1e9/self.clk_freq,
++                                           name="ddr3_user_clk")
++
++        sync = getattr(self.sync, clock_domain)
++
++        # Read path --------------------------------------------------------------------------------
++        # rd_data_valid cannot be back-pressured, so buffer it and never allow more
++        # reads outstanding than the buffer can absorb.
++        rd_fifo = stream.SyncFIFO([("data", data_width)], rd_fifo_depth)
++        self.rd_fifo = ClockDomainsRenamer(clock_domain)(rd_fifo)
++
++        rd_data       = Signal(data_width)
++        rd_data_valid = Signal()
++        self.comb += [
++            rd_fifo.sink.valid.eq(rd_data_valid),
++            rd_fifo.sink.data.eq(rd_data),
++            rd_fifo.source.connect(port.rdata),
++        ]
++
++        credits  = Signal(max=rd_fifo_depth+1, reset=rd_fifo_depth)
++        rd_issue = Signal()
++        rd_pop   = Signal()
++
++        # Command ----------------------------------------------------------------------------------
++        cmd       = Signal(3)
++        cmd_en    = Signal()
++        cmd_ready = Signal()
++        addr      = Signal(1 + bank_width + row_width + col_width)
++        cmd_ok    = Signal()
++
++        self.comb += [
++            # A read may only be issued if there is room to receive its data.
++            cmd_ok.eq(port.cmd.we | (credits != 0)),
++            cmd_en.eq(port.cmd.valid & cmd_ok),
++            port.cmd.ready.eq(cmd_ready & cmd_ok),
++            cmd.eq(Mux(port.cmd.we, 0b000, 0b001)),
++            # addr counts DQ-width words; the low bits select within the burst.
++            addr.eq(Cat(Constant(0, addr_shift), port.cmd.addr)),
++
++            rd_issue.eq(cmd_en & cmd_ready & ~port.cmd.we),
++            rd_pop.eq(rd_fifo.source.valid & rd_fifo.source.ready),
++        ]
++        sync += [
++            If(rd_issue & ~rd_pop, credits.eq(credits - 1)),
++            If(~rd_issue & rd_pop, credits.eq(credits + 1)),
++        ]
++
++        # Write ------------------------------------------------------------------------------------
++        wr_data      = Signal(data_width)
++        wr_data_en   = Signal()
++        wr_data_end  = Signal()
++        wr_data_mask = Signal(data_width//8)
++        wr_data_rdy  = Signal()
++
++        self.comb += [
++            wr_data.eq(port.wdata.data),
++            wr_data_en.eq(port.wdata.valid),
++            wr_data_end.eq(port.wdata.valid), # One native-port word per command.
++            wr_data_mask.eq(~port.wdata.we),  # Active high = do not write this byte.
++            port.wdata.ready.eq(wr_data_rdy),
++        ]
++
++        # IP ---------------------------------------------------------------------------------------
++        if netlist is not None:
++            platform.add_source(netlist)
++
++        self.specials += Instance(module_name,
++            name = instance_name,
++
++            # Clocking / reset.
++            i_clk                 = clk,
++            i_memory_clk          = memory_clk,
++            i_pll_lock            = pll_lock,
++            o_pll_stop            = pll_stop,
++            i_rst_n               = rst_n,
++            o_clk_out             = self.clk_out,
++            o_ddr_rst             = Open(),
++            o_init_calib_complete = self.init_done,
++
++            # Command.
++            i_cmd         = cmd,
++            i_cmd_en      = cmd_en,
++            i_addr        = addr,
++            o_cmd_ready   = cmd_ready,
++
++            # Write.
++            i_wr_data      = wr_data,
++            i_wr_data_en   = wr_data_en,
++            i_wr_data_end  = wr_data_end,
++            i_wr_data_mask = wr_data_mask,
++            o_wr_data_rdy  = wr_data_rdy,
++
++            # Read.
++            o_rd_data       = rd_data,
++            o_rd_data_valid = rd_data_valid,
++            o_rd_data_end   = Open(),
++
++            # Self-refresh / user refresh: unused, the controller refreshes itself.
++            i_sr_req = 0,
++            i_ref_req = 0,
++            o_sr_ack  = Open(),
++            o_ref_ack = Open(),
++            i_burst   = 0,
++
++            # DDR3 pads.
++            o_O_ddr_addr    = pads.a,
++            o_O_ddr_ba      = pads.ba,
++            o_O_ddr_cs_n    = pads.cs_n,
++            o_O_ddr_ras_n   = pads.ras_n,
++            o_O_ddr_cas_n   = pads.cas_n,
++            o_O_ddr_we_n    = pads.we_n,
++            o_O_ddr_clk     = pads.clk_p,
++            o_O_ddr_clk_n   = pads.clk_n,
++            o_O_ddr_cke     = pads.cke,
++            o_O_ddr_odt     = pads.odt,
++            o_O_ddr_reset_n = pads.reset_n,
++            o_O_ddr_dqm     = pads.dm,
++            io_IO_ddr_dq    = pads.dq,
++            io_IO_ddr_dqs   = pads.dqs_p,
++            io_IO_ddr_dqs_n = pads.dqs_n,
++        )
++
++        # Placement --------------------------------------------------------------------------------
++        # The DLL and the PHY's clock divider have to sit on the side of the die the
++        # DDR3 pins are on; the router will not work this out on its own. Paths are
++        # into the IP's own hierarchy and are stable across configurations.
++        cst = platform.toolchain.additional_cst_commands
++        if dll_loc is not None:
++            cst.append(f"INS_LOC \"{instance_name}/gw3_top/u_ddr_phy_top/u_dll\" {dll_loc};")
++        if clkdiv_loc is not None:
++            cst.append(f"INS_LOC \"{instance_name}/gw3_top/u_ddr_phy_top/fclkdiv\" {clkdiv_loc};")

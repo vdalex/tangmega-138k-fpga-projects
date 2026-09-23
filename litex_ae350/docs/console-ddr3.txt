@@ -1,0 +1,68 @@
+LiteX SoC on the hard AE350 with 1 GiB of DDR3 through Gowin's DDR3 Memory
+Interface IP. Built with the Education edition; BIOS cross-built on aarch64.
+
+    --with-gowin-ddr3
+    --gowin-ddr3-netlist .../ddr3_memory_interface/ddr3_memory_interface.v
+    --gowin-pll-init     .../src/pll_init.v
+
+
+--================ SoC =================--
+CPU:            Gowin AE350 @ 800MHz
+BUS:            wishbone 32-bit data/32-bit addr
+CSR:            32-bit data big ordering
+ROM:            128.0KiB
+SRAM:           8.0KiB
+MAIN RAM:       1.0GiB
+
+--=========== Initialization ===========--
+Memtest at 0x40000000 (2.0MiB)...
+  Write: 0x40000000-0x40200000 2.0MiB
+   Read: 0x40000000-0x40200000 2.0MiB
+Memtest OK
+Memspeed at 0x40000000 (Sequential, 2.0MiB)...
+  Write speed: 15.2MiB/s
+   Read speed: 5.8MiB/s
+--================ Boot ================--
+
+
+The read figure is the upconverter's line cache being defeated by
+AHB2Wishbone never emitting a burst CTI, not the memory - see the README.
+
+
+Earlier, from the debugging configuration that keeps main RAM in block RAM and
+maps DDR3 separately at 0x6000_0000. ddr3_init is init_calib_complete:
+
+litex> mem_read 0xe8000800 4
+Memory dump:
+0xe8000800  01 00 00 00                                      ....
+
+litex> mem_write 0x60000000 0xdeadbeef 4
+litex> mem_read 0x60000000 16
+Memory dump:
+0x60000000  ef be ad de ef be ad de ef be ad de ef be ad de  ................
+
+litex> mem_test 0x60000000 0x100000
+Memtest at 0x60000000 (1.0MiB)...
+  Write: 0x60000000-0x60100000 1.0MiB
+   Read: 0x60000000-0x60100000 1.0MiB
+Memtest OK
+
+
+Control experiment, to separate the board from the integration: Sipeed's
+unmodified ddr_memory_test_uart, rebuilt from their own .gprj file list and
+flashed to the same board. Its UART is held in reset unless
+init_calib_complete && !err, so the message is itself the result.
+
+DDR3 TEST OKAY!
+DDR3 TEST OKAY!
+DDR3 TEST OKAY!
+
+Read speed with the L2 cache in front of the controller (4 KiB: the largest
+that still closes timing at 50 MHz):
+
+--================ SoC =================--
+L2:             4.0KiB
+MAIN RAM:       1.0GiB
+Memtest OK
+  Write speed: 13.2MiB/s
+   Read speed: 13.1MiB/s   (5.8 MiB/s without it)

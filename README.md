@@ -1,10 +1,14 @@
 # Tang Mega 138K - FPGA projects
 
 Self-contained FPGA projects for the **Sipeed Tang Mega 138K**
-(Gowin **GW5AST-138C**). Every one of them puts a picture on HDMI with **no
+(Gowin **GW5AST-138C**). Six of them put a picture on HDMI with **no
 framebuffer** - four generate it in fabric, one wakes up the **hard RISC-V CPU**
 hiding in the same die and lets it print to the screen, and one **composes
-music** and draws the map it is composing from.
+music** and draws the map it is composing from. The seventh has no picture at
+all: it gives that same hard CPU a full **LiteX SoC** with **1 GiB of DDR3**.
+
+All of it was built with the **free Education edition** of Gowin EDA -
+including the hard RISC-V, and including DDR3.
 
 ## Video projects
 
@@ -81,6 +85,37 @@ does not exist on this part, and the data port is 64 bits wide. The project
 README documents each one, along with the LED-only bisection programs used to
 find them.
 
+## A full SoC on that same CPU
+
+| Project | What it does |
+|---|---|
+| **[litex_ae350](litex_ae350/)** | A **LiteX SoC** on the hard A25 with **1 GiB of DDR3** and the LiteX BIOS on a serial console |
+
+Where `riscv_hdmi` drives the hard core by hand, this hands it to **LiteX**: a
+generated SoC with a real BIOS, an interactive console, and the board's DDR3
+underneath it. No `.gprj` - LiteX writes the Verilog, the constraints and the
+Tcl and drives `gw_sh` itself. What the directory holds is six patches against
+upstream LiteX and the scripts to build with them.
+
+DDR3 goes through **Gowin's own controller** rather than litedram's Gowin PHY,
+whose read calibration never converged here. That is not a workaround so much as
+the same choice the vendor made: the `RiscV_AE350_SOC` IP has no DDR3
+controller of its own and compiles this very core into its generated wrapper. It
+also runs the PHY at a 1:4 clock ratio where litedram's runs 1:2, which is what
+puts the board's **full 32-bit bus** - both devices, 1 GiB rather than 512 MiB -
+at DDR3-800.
+
+The controller stayed silent for a long time over a **circular start-up
+dependency** that is easy to build and hard to see: `pll_stop` is an IP *output*
+that gates the memory clock and only rises once the IP leaves reset, so gating
+the PLL's only enabled output with it, while releasing reset on PLL lock, leaves
+nothing to break the circle. The README works through that and the rest -
+including two attempts at faster reads that were measured, rejected and written
+down rather than quietly dropped.
+
+**The vendor's DDR3 netlist is not redistributed here**; the README says where
+to get it and it is passed in by path.
+
 ## Hardware
 
 - **Board:** Sipeed Tang Mega 138K
@@ -94,8 +129,12 @@ find them.
   `HP_WS` AB17, `HP_DIN` AA16, `PA_EN` AB16 (**active low**, drive 0 to enable).
   Not over HDMI: real HDMI audio needs data islands and TERC4, which a raw-DVI
   transmitter does not do.
-- **Serial console** (riscv_hdmi): through the on-board **BL616** USB-serial
-  bridge at 115200 8N1; if two COM ports appear, it is usually the
+- **DDR3** (litex_ae350): two x16 devices sharing one address/command bus, so
+  the memory is **32 bits wide and 1 GiB** in total. Driven at DDR3-800 off a
+  400 MHz memory clock, from a **second PLL pinned to `PLL_L[0]`** - the left
+  side, next to the memory banks, while the CPU's PLL has to sit at `PLL_R[0]`.
+- **Serial console** (riscv_hdmi, litex_ae350): through the on-board **BL616**
+  USB-serial bridge at 115200 8N1; if two COM ports appear, it is usually the
   higher-numbered one.
 - **On-board LEDs:** `T18`, `R18`, `R17`, `P16` - **active low**. Note `V13`
   has no LED fitted on this board and `U21` is a dedicated CPU/SSPI pin.
@@ -112,3 +151,8 @@ The bitstream lands in `<project>/eda_proj/impl/pnr/<project>.fs`
 
 For `riscv_hdmi` the firmware is compiled into the bitstream, so build it
 **first** (`fw/build.ps1`, xPack `riscv-none-elf-gcc`) whenever the C changes.
+
+`litex_ae350` does not follow this flow at all - there is no `.gprj` to open,
+because LiteX generates the whole project and drives `gw_sh` itself. It needs a
+patched LiteX checkout and, for DDR3, two files from Gowin's IP that are not
+redistributed here. See [its README](litex_ae350/).

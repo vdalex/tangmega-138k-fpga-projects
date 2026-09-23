@@ -1,0 +1,19 @@
+diff --git a/litex/soc/cores/clock/gowin_gw5a.py b/litex/soc/cores/clock/gowin_gw5a.py
+index 28d7821a7..504f6423c 100644
+--- a/litex/soc/cores/clock/gowin_gw5a.py
++++ b/litex/soc/cores/clock/gowin_gw5a.py
+@@ -40,8 +59,12 @@ class GW5APLL(LiteXModule):
+         vco_freq_range = None
+         if device.startswith('GW5A-'):
+             vco_freq_range = (800e6, 1600e6) # As restricted by Gowin toolchain 1.9.9b3
+-        elif device.startswith('GW5A-') or device.startswith('GW5AT-') or device.startswith('GW5AST-'):
+-            vco_freq_range = (800e6, 2000e6) # datasheet values
++        elif device.startswith('GW5AT-') or device.startswith('GW5AST-'):
++            # Verified on a GW5AST-138C with Gowin 1.9.11.03, which rejects
++            # anything outside this range: "PA1019 : Invalid VCO frequency ...
++            # suitable range is from 650MHz to 1300MHz". It is only a warning,
++            # so a bitstream whose PLL never locks is still emitted.
++            vco_freq_range = (650e6, 1300e6)
+         if vco_freq_range is None:
+             raise ValueError(f"Unsupported device {device}.")
+         return vco_freq_range
