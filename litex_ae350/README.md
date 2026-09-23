@@ -17,6 +17,8 @@ Memtest OK
 litex>
 ```
 
+<img src="docs/litex_console.png" width="420">
+
 Boot logs: [docs/console-ddr3.txt](docs/console-ddr3.txt) with DDR3,
 [docs/console.txt](docs/console.txt) for the block-RAM configuration.
 

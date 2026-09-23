@@ -87,9 +87,9 @@ find them.
 
 ## A full SoC on that same CPU
 
-| Project | What it does |
-|---|---|
-| **[litex_ae350](litex_ae350/)** | A **LiteX SoC** on the hard A25 with **1 GiB of DDR3** and the LiteX BIOS on a serial console |
+| Preview | Project | What it does |
+|---|---|---|
+| <img src="litex_ae350/docs/litex_console.png" width="220"> | **[litex_ae350](litex_ae350/)** | A **LiteX SoC** on the hard A25 with **1 GiB of DDR3** and the LiteX BIOS on a serial console |
 
 Where `riscv_hdmi` drives the hard core by hand, this hands it to **LiteX**: a
 generated SoC with a real BIOS, an interactive console, and the board's DDR3
