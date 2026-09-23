@@ -66,3 +66,39 @@ MAIN RAM:       1.0GiB
 Memtest OK
   Write speed: 13.2MiB/s
    Read speed: 13.1MiB/s   (5.8 MiB/s without it)
+
+
+================================================================================
+Control: litedram's GW5DDRPHY on pristine upstream master (278ecaf6a), no
+patches of ours, the board's own target. Run to check whether the claim that it
+"never converges" still held. It does not - it works at 1:2.
+
+--ddr3-rate 1:2   (upstream default)
+  SDRAM:          512.0MiB 16-bit @ 200MT/s (CL-6 CWL-6)
+  Read leveling:
+    m0, b02: |11111111111111111111111111111111|  best: m0, b02 delays: 127+-127
+    m1, b02: |11111111111111111111111111111111|  best: m1, b02 delays: 127+-127
+  Memtest OK
+    Write speed: 10.1MiB/s
+     Read speed:  5.3MiB/s
+
+--ddr3-rate 1:4   (the faster mode)
+  SDRAM:          512.0MiB 16-bit @ 400MT/s (CL-6 CWL-5)
+  Write DQ-DQS training:
+    m0: |000000000000000000000000000000000| delays: -
+    m1: |000000000000000000000000000000000| delays: -
+  Read leveling:
+    m0, b00..b07: all zeros   best: m0, b03 delays: -
+    m1, b00..b07: all zeros   best: m1, b05 delays: -
+  Memtest KO - data errors 524222/524288 (99.99%)
+
+Note the failure is not diagnosed: with no window anywhere, calibration still
+prints a "best" choice and proceeds to a memtest that fails on every word.
+
+Also note 5.3 MiB/s against this project's 5.8 MiB/s before its L2 was added -
+the same cause, add_sdram(..., l2_cache_size=0).
+
+Building any of this needed one fix first: on current master the gowin_ae350
+BIOS does not compile at all. The port's irq.h is empty while core.py now
+reports CONFIG_CPU_HAS_INTERRUPT, so libbase's uart.c fails on implicit
+declarations of irq_getie / irq_getmask / irq_setmask.

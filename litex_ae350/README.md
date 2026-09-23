@@ -81,6 +81,14 @@ before believing a build.
 Apply to a `litex_setup.py --init --install` checkout, then keep both machines
 in step with `scripts/sync_to_opi.ps1`.
 
+These are against LiteX `cfb382f54`, the base this was developed on. Upstream has
+moved a long way since, and **two of them are no longer needed** there:
+`01-gw5a-vco-range` is fixed (and better — the range now follows the PLL
+primitive), and `02-gowin-additional-sdc` is superseded by a real
+`add_false_path_constraint()` plus `add_generated_clock_constraint()`, whose
+`keep` attribute also removes the need for the `get_pins` workaround this
+project uses to name a clock. `03` and `04` still apply.
+
 | Patch | What it fixes |
 |---|---|
 | `01-gw5a-vco-range` | `GW5APLL` assumed a VCO range of 800–2000 MHz; the toolchain enforces **650–1300** on GW5AST. The solver happily chose VCO = 1600 MHz for a 50 MHz sys / 800 MHz cpu pair when the legal VCO = 800 solution gives identical outputs. `PA1019` is only a *warning*, so a bitstream is written whose PLL never locks — a dead board with a clean log. **Required for the working configuration.** |
@@ -88,7 +96,7 @@ in step with `scripts/sync_to_opi.ps1`.
 | `03-gw5a-pll-enable-and-init` | Two things `GW5APLL` cannot express that **any** Gowin memory controller needs: a per-output clock enable (`ENCLK`n was hard-wired to 1) and the `PLL_INIT` startup sequencer that every vendor-generated GW5A PLL is wrapped in. |
 | `04-gowin-ddr3-core` | New `litex/soc/cores/ram/gowin_ddr3.py`: Gowin's DDR3 Memory Interface IP wrapped as a LiteDRAM native port. |
 | `05-tang-mega-138k-platform` | DDR3 IO attributes: `SSTL15_I`/`SSTL15D_I` are rejected outright (`CT1109`), a group-level `IOStandard` is *appended* to the per-subsignal one rather than overriding it, and `BANK_VCCIO=1.5` collides with the ELVDS buffers `GW5DDRPHY` instantiates. Adds `ddram:1`, the board's **full 32-bit** bus. |
-| `06-tang-mega-138k-target` | Both memory paths: the litedram clocking work (`--with-ddr3`, still not converging) and the working `--with-gowin-ddr3`, plus a guard on the CPU's PLL output index (below). |
+| `06-tang-mega-138k-target` | Both memory paths: the litedram clocking work (`--with-ddr3`) and `--with-gowin-ddr3`, plus a guard on the CPU's PLL output index (below). Note upstream has since reworked this target; see the correction at the end. |
 
 ## The trap that cost the most
 
@@ -178,7 +186,8 @@ Memtest OK
 Memory Interface IP**, wrapped as a LiteDRAM native port by
 `litex/soc/cores/ram/gowin_ddr3.py`. That buys the full 32-bit bus — both
 devices, **1 GiB** rather than 512 MiB — at DDR3-800 off a 400 MHz memory
-clock, because the vendor PHY runs 1:4 where `GW5DDRPHY` runs 1:2.
+clock, running the PHY at a 1:4 ratio. See the correction at the end for how
+this compares with litedram on current upstream, which works at 1:2.
 
 This is not an exotic choice. **The AE350 has no DDR3 controller of its own**:
 `RiscV_AE350_SOC`'s generated wrapper compiles `ddr3_1_4code_hs.v` and
@@ -267,37 +276,47 @@ worst path starting at the AE350's dbus address register and running through the
 bus decoder. At 50 MHz that same path leaves only 11% margin, so 100 MHz needs
 the interconnect pipelined, not a constraint change.
 
-### The litedram path, for the record
+### The litedram path, and a correction to what this README used to claim
 
-`--with-ddr3` still selects `GW5DDRPHY`, and its read calibration still does
-not converge. Measured, all at 16-bit width:
+**litedram's `GW5DDRPHY` works on this board.** It did not when this project
+started, which is why the vendor controller was taken up at all, and this
+README asserted for a while that its read calibration "never converges". That
+claim is **wrong for current upstream**, and was only ever true of the base this
+work began from. Re-measured against a pristine `origin/master` checkout — no
+patches of ours, the board's own target, DDR3 on by default:
+
+| Upstream master, `--ddr3-rate` | Read leveling | Result |
+|---|---|---|
+| **`1:2`** (default) | **full window on both lanes**, `m0/m1 b02` | **Memtest OK** — 512 MiB @ 200 MT/s |
+| `1:4` | no window at all, on either lane | 99.99% data errors |
+
+So the honest comparison is not "works / does not work" but width and rate:
+
+| | litedram, `1:2` | this project |
+|---|---|---|
+| Capacity | 512 MiB (one device, 16-bit) | **1 GiB** (both, 32-bit) |
+| Rate | 200 MT/s | **800 MT/s** |
+| Read | 5.3 MiB/s | **13.1 MiB/s** |
+| Write | 10.1 MiB/s | 13.2 MiB/s |
+
+Two things worth taking upstream fell out of that re-measurement. `1:4` — the
+mode that would double the rate — finds no window on either byte lane, and
+calibration does not notice: it still prints a `best:` choice and proceeds to a
+memtest that fails on 99.99% of words. And upstream's read figure, 5.3 MiB/s,
+is within noise of this project's 5.8 MiB/s *before* its L2 cache was added,
+for the same reason — `add_sdram(..., l2_cache_size=0)` with the 8192 default
+sitting commented out beside it.
+
+For the record, the earlier measurements against the old base, all 16-bit:
 
 | Configuration | Read leveling | Memtest data errors |
 |---|---|---|
-| Upstream, one PLL, 200 MT/s | no window at all | 91.6% |
-| **Second PLL on `PLL_L[0]`, 200 MT/s** | **one window, `m1 b02`** | **50.8%** |
+| Old base, one PLL, 200 MT/s | no window at all | 91.6% |
+| Second PLL on `PLL_L[0]`, 200 MT/s | one window, `m1 b02` | 50.8% |
 | …plus DLL pinned to `DDRDLLM_BL` | unchanged | 99.999% |
 | …at 375 MT/s instead | window lost | 87.5% |
 | …plus CLKDIV at `LEFTSIDE[4]` | unchanged | 50.8% |
 
 Every pin was verified against Sipeed's own `ddr_memory/ddr_memory_test_uart`
 constraints for this board, and the geometry litedram assumes
-(8 banks × 32768 rows × 1024 columns) matches. The clocking recipe from Gowin's
-`RiscV_AE350_SOC_V1.3/example/DDR3_Shared` reference for this exact die was
-applied in full: two PLLs, `PLL_R[0]` for the CPU and `PLL_L[0]` for the
-memory, plus the DLL and clock-divider placements.
-
-Moving the memory clock to the left PLL is a real, measurable improvement —
-from nothing at all to nearly half of memtest reading back correctly. But byte
-lane 0 never finds a valid strobe delay in any configuration, and the remaining
-knobs are guesses about `GW5DDRPHY`'s internals rather than anything the board
-determines. Note also that the vendor controller uses a 1:4 clocking ratio
-where `GW5DDRPHY` uses 1:2, so the same 50 MHz controller clock gives Gowin
-400 MT/s and litedram only 200.
-
-All three litex-boards targets carrying this PHY default to a clock at which
-DDR3 cannot work, which suggests the support is unfinished rather than
-board-specific. The evidence above is written up for upstream.
-
-Since the vendor IP now works, this path is kept only as evidence; there is no
-reason to prefer it on this board.
+(8 banks × 32768 rows × 1024 columns) matches.

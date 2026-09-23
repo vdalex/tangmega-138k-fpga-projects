@@ -97,13 +97,18 @@ underneath it. No `.gprj` - LiteX writes the Verilog, the constraints and the
 Tcl and drives `gw_sh` itself. What the directory holds is six patches against
 upstream LiteX and the scripts to build with them.
 
-DDR3 goes through **Gowin's own controller** rather than litedram's Gowin PHY,
-whose read calibration never converged here. That is not a workaround so much as
-the same choice the vendor made: the `RiscV_AE350_SOC` IP has no DDR3
-controller of its own and compiles this very core into its generated wrapper. It
-also runs the PHY at a 1:4 clock ratio where litedram's runs 1:2, which is what
-puts the board's **full 32-bit bus** - both devices, 1 GiB rather than 512 MiB -
-at DDR3-800.
+DDR3 goes through **Gowin's own controller** rather than litedram's Gowin PHY.
+That is not a workaround so much as the same choice the vendor made: the
+`RiscV_AE350_SOC` IP has no DDR3 controller of its own and compiles this very
+core into its generated wrapper. It runs the PHY at a **1:4** clock ratio, which
+is what puts the board's **full 32-bit bus** - both devices, 1 GiB rather than
+512 MiB - at **DDR3-800**.
+
+litedram's `GW5DDRPHY` does work on this board, at half the width and a quarter
+of the rate: 512 MiB at 200 MT/s, and about 2.5x slower to read. It did *not*
+work when this project started, which is why the vendor route was taken; that
+has since been fixed upstream, and the comparison is measured and written up in
+the project README rather than asserted.
 
 The controller stayed silent for a long time over a **circular start-up
 dependency** that is easy to build and hard to see: `pll_stop` is an IP *output*
